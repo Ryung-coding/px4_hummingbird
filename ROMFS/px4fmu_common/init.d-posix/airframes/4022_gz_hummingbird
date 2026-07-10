@@ -1,0 +1,91 @@
+#!/bin/sh
+#
+# @name Gazebo hummingbird
+#
+# @type Quadrotor
+#
+
+. ${R}etc/init.d/rc.mc_defaults
+
+PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
+PX4_GZ_WORLD=${PX4_GZ_WORLD:=default}
+PX4_SIM_MODEL=${PX4_SIM_MODEL:=hummingbird}
+
+
+param set-default SIM_GZ_EN 1
+
+param set-default SIM_GPS_USED 10
+param set-default SYS_HAS_GPS 1
+param set-default EKF2_EV_CTRL 0
+param set-default EKF2_GPS_CTRL 7
+param set-default EKF2_HGT_REF 0
+
+param set CA_AIRFRAME 0
+param set CA_ROTOR_COUNT 4
+
+# PX4 control allocation follows the HummingBird z-down body frame used by the SDF.
+# Motor order follows the SDF naming and Gazebo motorNumber mapping:
+# rotor_0/joint_*1, rotor_1/joint_*2, rotor_2/joint_*3, rotor_3/joint_*4.
+# Gazebo SDF y is mirrored when converted to the PX4 body-y used by CA.
+param set CA_ROTOR0_PX 0.1861
+param set CA_ROTOR0_PY 0.1861
+param set CA_ROTOR0_KM 0.02
+
+param set CA_ROTOR1_PX -0.1861
+param set CA_ROTOR1_PY 0.1861
+param set CA_ROTOR1_KM -0.02
+
+param set CA_ROTOR2_PX -0.1861
+param set CA_ROTOR2_PY -0.1861
+param set CA_ROTOR2_KM 0.02
+
+param set CA_ROTOR3_PX 0.1861
+param set CA_ROTOR3_PY -0.1861
+param set CA_ROTOR3_KM -0.02
+
+# Motors: f[0..3].
+param set SIM_GZ_EC_FUNC1 101
+param set SIM_GZ_EC_FUNC2 102
+param set SIM_GZ_EC_FUNC3 103
+param set SIM_GZ_EC_FUNC4 104
+
+# DDS actuator_servos: control[0..3] = theta1..theta4, control[4..7] = phi1..phi4.
+# For now control_allocator publishes all servo controls as 0.
+# Servo commands are exported through DDS and forwarded to Gazebo by the
+# px4_hummingbird ROS bridge to avoid double publishing on /model/.../servo_*.
+param set-default SIM_GZ_SV_FUNC1 0
+param set-default SIM_GZ_SV_FUNC2 0
+param set-default SIM_GZ_SV_FUNC3 0
+param set-default SIM_GZ_SV_FUNC4 0
+param set-default SIM_GZ_SV_FUNC5 0
+param set-default SIM_GZ_SV_FUNC6 0
+param set-default SIM_GZ_SV_FUNC7 0
+param set-default SIM_GZ_SV_FUNC8 0
+
+param set-default SIM_GZ_SV_MAXA1 180
+param set-default SIM_GZ_SV_MAXA2 180
+param set-default SIM_GZ_SV_MAXA3 180
+param set-default SIM_GZ_SV_MAXA4 180
+param set-default SIM_GZ_SV_MINA1 -180
+param set-default SIM_GZ_SV_MINA2 -180
+param set-default SIM_GZ_SV_MINA3 -180
+param set-default SIM_GZ_SV_MINA4 -180
+
+param set-default SIM_GZ_SV_MAXA5 30
+param set-default SIM_GZ_SV_MAXA6 30
+param set-default SIM_GZ_SV_MAXA7 30
+param set-default SIM_GZ_SV_MAXA8 30
+param set-default SIM_GZ_SV_MINA5 -30
+param set-default SIM_GZ_SV_MINA6 -30
+param set-default SIM_GZ_SV_MINA7 -30
+param set-default SIM_GZ_SV_MINA8 -30
+
+param set-default SIM_GZ_EC_MIN1 0
+param set-default SIM_GZ_EC_MIN2 0
+param set-default SIM_GZ_EC_MIN3 0
+param set-default SIM_GZ_EC_MIN4 0
+
+param set-default SIM_GZ_EC_MAX1 1000
+param set-default SIM_GZ_EC_MAX2 1000
+param set-default SIM_GZ_EC_MAX3 1000
+param set-default SIM_GZ_EC_MAX4 1000

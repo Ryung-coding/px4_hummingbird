@@ -747,17 +747,22 @@ ControlAllocator::publish_actuator_controls()
 		for (servos_idx = 0; servos_idx < _num_actuators[1] && servos_idx < actuator_servos_s::NUM_CONTROLS; servos_idx++) {
 			int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
 			float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
-			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : 0.f;
 			++actuator_idx_matrix[selected_matrix];
 			++actuator_idx;
 		}
 
 		for (int i = servos_idx; i < actuator_servos_s::NUM_CONTROLS; i++) {
-			actuator_servos.control[i] = NAN;
+			actuator_servos.control[i] = 0.f;
 		}
 
-		_actuator_servos_pub.publish(actuator_servos);
+	} else {
+		for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; i++) {
+			actuator_servos.control[i] = 0.f;
+		}
 	}
+
+	_actuator_servos_pub.publish(actuator_servos);
 }
 
 void
