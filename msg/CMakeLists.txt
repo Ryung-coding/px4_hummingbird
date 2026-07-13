@@ -260,6 +260,7 @@ set(msg_files
 	versioned/FixedWingLongitudinalSetpoint.msg
 	versioned/GotoSetpoint.msg
 	versioned/HomePosition.msg
+	versioned/HummingbirdStatus.msg
 	versioned/LateralControlConfiguration.msg
 	versioned/LongitudinalControlConfiguration.msg
 	versioned/ManualControlSetpoint.msg

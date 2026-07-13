@@ -80,7 +80,11 @@ struct SendTopicsSubs {
 			  uxr_object_id(0, UXR_INVALID_ID),
 			  "@(pub['dds_type'])",
 			  "@(pub['topic'])",
+@[        if pub['topic_simple'] == 'actuator_servos']@
+			  0,
+@[        else]@
 			  get_message_version<@(pub['simple_base_type'])_s>(),
+@[        end if]@
 			  ucdr_topic_size_@(pub['simple_base_type'])(),
 			  &ucdr_serialize_@(pub['simple_base_type']),
 			  static_cast<uint64_t>((@(pub.get('rate_limit', 0)) > 0) ? (1e3 / @(pub.get('rate_limit', 1e3))) : UXRCE_DEFAULT_POLL_INTERVAL_MS),

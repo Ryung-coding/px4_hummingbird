@@ -52,6 +52,7 @@
 #include <ActuatorEffectivenessUUV.hpp>
 #include <ActuatorEffectivenessHelicopter.hpp>
 #include <ActuatorEffectivenessHelicopterCoaxial.hpp>
+#include <ActuatorEffectivenessHummingBird.hpp>
 #include <ActuatorEffectivenessSpacecraft.hpp>
 
 #include "ActuatorGroupPreflightCheck.hpp"
@@ -147,6 +148,8 @@ private:
 
 	void publish_actuator_controls();
 
+	void publish_hummingbird_actuator_controls();
+
 	void handle_stopped_motors(const hrt_abstime now);
 
 	float get_ice_shedding_output(hrt_abstime now);
@@ -173,6 +176,8 @@ private:
 		HELICOPTER_COAXIAL = 12,
 		ROVER_MECANUM = 13,
 		SPACECRAFT_2D = 14,
+		SPACECRAFT_3D = 15,
+		HUMMINGBIRD = 16,
 	};
 
 	enum class FailureMode {
@@ -215,6 +220,9 @@ private:
 
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
+	matrix::Vector<float, 4> _hummingbird_motor_sp{};
+	matrix::Vector<float, 4> _hummingbird_theta_sp{};
+	matrix::Vector<float, 4> _hummingbird_phi_sp{};
 	bool _publish_controls{true};
 
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
@@ -242,6 +250,7 @@ private:
 		(ParamInt<px4::params::CA_METHOD>) _param_ca_method,
 		(ParamInt<px4::params::CA_FAILURE_MODE>) _param_ca_failure_mode,
 		(ParamInt<px4::params::CA_R_REV>) _param_r_rev,
+		(ParamInt<px4::params::HB_CTRL_MODE>) _param_hb_ctrl_mode,
 		(ParamFloat<px4::params::CA_ICE_PERIOD>) _param_ice_shedding_period
 	)
 

@@ -51,6 +51,163 @@ using namespace time_literals;
 
 ModuleBase::Descriptor ControlAllocator::desc{task_spawn, custom_command, print_usage};
 
+namespace
+{
+constexpr float kHummingBirdLx = 0.1861f;
+constexpr float kHummingBirdLy = 0.1861f;
+constexpr float kHummingBirdD = 0.0500f;
+constexpr float kHummingBirdZeta = 0.0200f;
+constexpr float kHummingBirdVirtualLambda = 1.0e-4f;
+constexpr float kHummingBirdFMin = 1.0e-3f;
+constexpr float kHummingBirdMaxRotVelocity = 1000.0f;
+constexpr float kHummingBirdMaxRotorThrust = 12.0f;
+constexpr float kHummingBirdMaxTotalThrust = 4.0f * kHummingBirdMaxRotorThrust;
+constexpr float kHummingBirdMaxMoment = kHummingBirdMaxTotalThrust * kHummingBirdLx;
+constexpr float kHummingBirdThetaLimitRad = M_PI_F;
+constexpr float kHummingBirdPhiLimitRad = M_PI_F / 6.0f;
+
+struct HummingBirdAllocationOutput
+{
+	matrix::Vector<float, 4> f{};
+	matrix::Vector<float, 4> theta{};
+	matrix::Vector<float, 4> phi{};
+};
+
+float mean_angle(float a, float b)
+{
+	return atan2f(sinf(a) + sinf(b), cosf(a) + cosf(b));
+}
+
+HummingBirdAllocationOutput allocation_P2T2(const matrix::Vector3f &moment_cmd, const matrix::Vector3f &force_cmd,
+		const matrix::Vector<float, 4> &theta_measured, const matrix::Vector<float, 4> &phi_measured)
+{
+	using Matrix68f = matrix::Matrix<float, 6, 8>;
+	using Vector6f = matrix::Vector<float, 6>;
+	using Vector8f = matrix::Vector<float, 8>;
+
+	const float theta_front = mean_angle(theta_measured(0), theta_measured(3));
+	const float theta_back = mean_angle(theta_measured(1), theta_measured(2));
+
+	const float phi14 = 0.5f * (phi_measured(0) + phi_measured(3));
+	const float phi23 = 0.5f * (phi_measured(1) + phi_measured(2));
+
+	const float front_ex = -sinf(theta_front) * cosf(phi14);
+	const float front_ey = sinf(phi14);
+	const float front_ez = -cosf(theta_front) * cosf(phi14);
+
+	const float back_ex = -sinf(theta_back) * cosf(phi23);
+	const float back_ey = sinf(phi23);
+	const float back_ez = -cosf(theta_back) * cosf(phi23);
+
+	const float front_x = kHummingBirdLx - kHummingBirdD * cosf(phi14) * sinf(theta_front);
+	const float front_y = kHummingBirdD * sinf(phi14);
+
+	const float back_x = -kHummingBirdLx - kHummingBirdD * cosf(phi23) * sinf(theta_back);
+	const float back_y = kHummingBirdD * sinf(phi23);
+
+	Matrix68f A{};
+
+	A(0, 2) = front_y;
+	A(0, 5) = back_y;
+	A(0, 6) = kHummingBirdLy * front_ez - kHummingBirdZeta * front_ex;
+	A(0, 7) = kHummingBirdLy * back_ez + kHummingBirdZeta * back_ex;
+
+	A(1, 2) = -front_x;
+	A(1, 5) = -back_x;
+	A(1, 6) = -kHummingBirdZeta * front_ey;
+	A(1, 7) = kHummingBirdZeta * back_ey;
+
+	A(2, 0) = -front_y;
+	A(2, 1) = front_x;
+	A(2, 3) = -back_y;
+	A(2, 4) = back_x;
+	A(2, 6) = -kHummingBirdLy * front_ex - kHummingBirdZeta * front_ez;
+	A(2, 7) = -kHummingBirdLy * back_ex + kHummingBirdZeta * back_ez;
+
+	A(3, 0) = 1.0f;
+	A(3, 3) = 1.0f;
+
+	A(4, 1) = 1.0f;
+	A(4, 4) = 1.0f;
+
+	A(5, 2) = 1.0f;
+	A(5, 5) = 1.0f;
+
+	Vector6f wrench{};
+	wrench(0) = moment_cmd(0);
+	wrench(1) = moment_cmd(1);
+	wrench(2) = moment_cmd(2);
+	wrench(3) = force_cmd(0);
+	wrench(4) = force_cmd(1);
+	wrench(5) = force_cmd(2);
+
+	matrix::SquareMatrix<float, 6> H = A * A.T();
+
+	for (int i = 0; i < 6; ++i) {
+		H(i, i) += kHummingBirdVirtualLambda * kHummingBirdVirtualLambda;
+	}
+
+	const Vector8f virtual_force = A.T() * H.I() * wrench;
+
+	matrix::Vector3f front_force{};
+	front_force(0) = virtual_force(0);
+	front_force(1) = virtual_force(1);
+	front_force(2) = virtual_force(2);
+
+	matrix::Vector3f back_force{};
+	back_force(0) = virtual_force(3);
+	back_force(1) = virtual_force(4);
+	back_force(2) = virtual_force(5);
+
+	const float front_force_norm = front_force.norm();
+	const float back_force_norm = back_force.norm();
+	const float f_front = math::max(front_force_norm, kHummingBirdFMin);
+	const float f_back = math::max(back_force_norm, kHummingBirdFMin);
+
+	matrix::Vector3f front_dir = front_force / f_front;
+	matrix::Vector3f back_dir = back_force / f_back;
+
+	if (front_force_norm <= kHummingBirdFMin) {
+		front_dir(0) = 0.0f;
+		front_dir(1) = 0.0f;
+		front_dir(2) = -1.0f;
+	}
+
+	if (back_force_norm <= kHummingBirdFMin) {
+		back_dir(0) = 0.0f;
+		back_dir(1) = 0.0f;
+		back_dir(2) = -1.0f;
+	}
+
+	const float theta1 = math::constrain(atan2f(-front_dir(0), -front_dir(2)), -kHummingBirdThetaLimitRad, kHummingBirdThetaLimitRad);
+	const float theta2 = math::constrain(atan2f(-back_dir(0), -back_dir(2)), -kHummingBirdThetaLimitRad, kHummingBirdThetaLimitRad);
+	const float phi14_cmd = math::constrain(asinf(math::constrain(front_dir(1), -1.0f, 1.0f)), -kHummingBirdPhiLimitRad, kHummingBirdPhiLimitRad);
+	const float phi23_cmd = math::constrain(asinf(math::constrain(back_dir(1), -1.0f, 1.0f)), -kHummingBirdPhiLimitRad, kHummingBirdPhiLimitRad);
+
+	const float df14 = math::constrain(virtual_force(6), -f_front + kHummingBirdFMin, f_front - kHummingBirdFMin);
+	const float df23 = math::constrain(virtual_force(7), -f_back + kHummingBirdFMin, f_back - kHummingBirdFMin);
+
+	HummingBirdAllocationOutput out{};
+	out.f(0) = math::constrain(0.5f * (f_front + df14), 0.0f, kHummingBirdMaxRotorThrust);
+	out.f(3) = math::constrain(0.5f * (f_front - df14), 0.0f, kHummingBirdMaxRotorThrust);
+	out.f(1) = math::constrain(0.5f * (f_back + df23), 0.0f, kHummingBirdMaxRotorThrust);
+	out.f(2) = math::constrain(0.5f * (f_back - df23), 0.0f, kHummingBirdMaxRotorThrust);
+
+	out.theta(0) = theta1;
+	out.theta(1) = theta2;
+	out.theta(2) = theta2;
+	out.theta(3) = theta1;
+
+	out.phi(0) = phi14_cmd;
+	out.phi(1) = phi23_cmd;
+	out.phi(2) = phi23_cmd;
+	out.phi(3) = phi14_cmd;
+
+	return out;
+}
+}
+
+
 ControlAllocator::ControlAllocator() :
 	ModuleParams(nullptr),
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl),
@@ -261,6 +418,10 @@ ControlAllocator::update_effectiveness_source()
 
 		case EffectivenessSource::SPACECRAFT_2D:
 			tmp = new ActuatorEffectivenessSpacecraft(this);
+			break;
+
+		case EffectivenessSource::HUMMINGBIRD:
+			tmp = new ActuatorEffectivenessHummingBird(this);
 			break;
 
 		case EffectivenessSource::ROVER_ACKERMANN: // Unreachable: Rover startup scripts don't load control_allocator. Controllers publish actuator_outputs directly.
@@ -704,9 +865,62 @@ ControlAllocator::get_ice_shedding_output(hrt_abstime now)
 }
 
 void
+ControlAllocator::publish_hummingbird_actuator_controls()
+{
+	actuator_motors_s actuator_motors{};
+	actuator_motors.timestamp = hrt_absolute_time();
+	actuator_motors.timestamp_sample = _timestamp_sample;
+	actuator_motors.reversible_flags = _param_r_rev.get();
+
+	actuator_servos_s actuator_servos{};
+	actuator_servos.timestamp = actuator_motors.timestamp;
+	actuator_servos.timestamp_sample = _timestamp_sample;
+
+	matrix::Vector3f moment_cmd = _torque_sp * kHummingBirdMaxMoment;
+	matrix::Vector3f force_cmd = _thrust_sp * kHummingBirdMaxTotalThrust;
+
+	const HummingBirdAllocationOutput allocation = allocation_P2T2(moment_cmd, force_cmd,
+			_hummingbird_theta_sp, _hummingbird_phi_sp);
+
+	_hummingbird_motor_sp = allocation.f;
+	_hummingbird_theta_sp = allocation.theta;
+	_hummingbird_phi_sp = allocation.phi;
+
+	for (int i = 0; i < actuator_motors_s::NUM_CONTROLS; ++i) {
+		actuator_motors.control[i] = NAN;
+	}
+
+	for (int i = 0; i < 4; ++i) {
+		if (PX4_ISFINITE(_hummingbird_motor_sp(i))) {
+			actuator_motors.control[i] = sqrtf(math::constrain(_hummingbird_motor_sp(i) / kHummingBirdMaxRotorThrust, 0.0f, 1.0f));
+
+		} else {
+			actuator_motors.control[i] = NAN;
+		}
+	}
+
+	for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; ++i) {
+		actuator_servos.control[i] = 0.0f;
+	}
+
+	for (int i = 0; i < 4; ++i) {
+		actuator_servos.control[i] = math::constrain(_hummingbird_theta_sp(i) / kHummingBirdThetaLimitRad, -1.0f, 1.0f);
+		actuator_servos.control[i + 4] = math::constrain(_hummingbird_phi_sp(i) / kHummingBirdPhiLimitRad, -1.0f, 1.0f);
+	}
+
+	_actuator_motors_pub.publish(actuator_motors);
+	_actuator_servos_pub.publish(actuator_servos);
+}
+
+void
 ControlAllocator::publish_actuator_controls()
 {
 	if (!_publish_controls) {
+		return;
+	}
+
+	if (_effectiveness_source_id == EffectivenessSource::HUMMINGBIRD && _param_hb_ctrl_mode.get() == 1) {
+		publish_hummingbird_actuator_controls();
 		return;
 	}
 

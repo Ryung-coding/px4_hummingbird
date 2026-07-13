@@ -20,7 +20,9 @@ param set-default EKF2_EV_CTRL 0
 param set-default EKF2_GPS_CTRL 7
 param set-default EKF2_HGT_REF 0
 
-param set CA_AIRFRAME 0
+param set CA_AIRFRAME 16
+param set-default HB_CTRL_MODE 0
+param set-default HB_CMD_SOURCE 0
 param set CA_ROTOR_COUNT 4
 
 # PX4 control allocation follows the HummingBird z-down body frame used by the SDF.

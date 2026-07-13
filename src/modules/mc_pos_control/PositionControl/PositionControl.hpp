@@ -186,6 +186,19 @@ public:
 	void getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const;
 
 	/**
+	 * Get a fully-actuated attitude setpoint for HummingBird.
+	 *
+	 * The position controller output is treated as a force command, not as an
+	 * attitude-defining thrust direction. If a valid 6DoF attitude setpoint is
+	 * available, q_d follows that command. Otherwise HummingBird attitude is held
+	 * level and yaw follows the trajectory yaw setpoint. The force command is
+	 * transformed from NED to body frame and passed through in thrust_body.
+	 */
+	void getHummingBirdAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint,
+					    const matrix::Quatf &current_attitude,
+					    const matrix::Quatf *attitude_sp = nullptr) const;
+
+	/**
 	 * All setpoints are set to NAN (uncontrolled). Timestampt zero.
 	 */
 	static const trajectory_setpoint_s empty_trajectory_setpoint;

@@ -8,12 +8,24 @@ publications:
   - topic: /fmu/out/actuator_servos
     type: px4_msgs::msg::ActuatorServos
 
+  - topic: /fmu/out/hummingbird_status
+    type: px4_msgs::msg::HummingbirdStatus
+
+  - topic: /fmu/out/manual_control_setpoint
+    type: px4_msgs::msg::ManualControlSetpoint
+
+  - topic: /fmu/out/vehicle_local_position
+    type: px4_msgs::msg::VehicleLocalPosition
+
+  - topic: /fmu/out/vehicle_status
+    type: px4_msgs::msg::VehicleStatus
+
 subscriptions:
   - topic: /fmu/in/offboard_control_mode
     type: px4_msgs::msg::OffboardControlMode
 
-  - topic: /fmu/in/trajectory_setpoint
-    type: px4_msgs::msg::TrajectorySetpoint
+  - topic: /fmu/in/trajectory_setpoint6dof
+    type: px4_msgs::msg::TrajectorySetpoint6dof
 
   - topic: /fmu/in/vehicle_command
     type: px4_msgs::msg::VehicleCommand
