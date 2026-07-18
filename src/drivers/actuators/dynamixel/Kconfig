@@ -1,0 +1,5 @@
+menuconfig DRIVERS_ACTUATORS_DYNAMIXEL
+	bool "dynamixel"
+	default n
+	---help---
+		Enable Dynamixel Protocol 2.0 actuator output over UART.

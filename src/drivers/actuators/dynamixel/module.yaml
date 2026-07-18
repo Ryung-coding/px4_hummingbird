@@ -1,0 +1,225 @@
+module_name: Dynamixel
+
+serial_config:
+    - command: dynamixel start -d ${SERIAL_DEV}
+      port_config_param:
+        name: DXL_CFG
+        group: Dynamixel
+
+parameters:
+    - group: Dynamixel
+      definitions:
+        DXL_ENABLE:
+            description:
+                short: Enable Dynamixel output
+                long: |
+                    Enables Dynamixel Protocol 2.0 Goal Position Sync Write output from actuator_servos.
+                    When disabled, the driver stays running but does not transmit Goal Position packets.
+                    This does not affect actuator_servos publication or the uXRCE-DDS bridge.
+            type: boolean
+            default: 0
+        DXL_KILL:
+            description:
+                short: Kill Dynamixel servo torque
+                long: |
+                    Disables Dynamixel servo torque when set. This is independent from the vehicle kill switch used for motors and controllers.
+                    When cleared, the driver sends Torque Enable before sending Goal Position packets.
+            type: boolean
+            default: 0
+        DXL_BAUD:
+            description:
+                short: Dynamixel UART baud rate
+                long: |
+                    UART baud rate for the Dynamixel RS-485 bus. This must match the XM430-W210-R baud rate setting.
+            type: int32
+            min: 57600
+            max: 2000000
+            reboot_required: true
+            default: 1000000
+        DXL_RATE:
+            description:
+                short: Dynamixel Goal Position send rate
+                long: |
+                    Rate in Hz for Protocol 2.0 Sync Write Goal Position packets.
+            type: int32
+            min: 1
+            max: 400
+            default: 100
+        DXL_COUNT:
+            description:
+                short: Number of Dynamixel servos
+                long: |
+                    Number of Dynamixel servos controlled from actuator_servos.control[0..7].
+            type: int32
+            min: 0
+            max: 8
+            reboot_required: true
+            default: 8
+        DXL_ARM_ONLY:
+            description:
+                short: Send only while armed
+                long: |
+                    If enabled, Goal Position packets are sent only while the vehicle is armed.
+                    Torque Enable and Torque Disable packets are intentionally not sent in this first implementation.
+            type: boolean
+            default: 1
+        DXL_HB_AUTOST:
+            description:
+                short: HummingBird SYS_AUTOSTART value
+                long: |
+                    SYS_AUTOSTART value treated as HummingBird mode by the Dynamixel driver.
+                    When the current SYS_AUTOSTART does not match this value, the driver keeps all Dynamixel Goal Positions at center.
+            type: int32
+            min: 0
+            max: 9999999
+            reboot_required: true
+            default: 4001
+        DXL_1_ID: &dxl_id
+            description:
+                short: Dynamixel 1 ID
+            type: int32
+            min: 1
+            max: 252
+            reboot_required: true
+            default: 1
+        DXL_1_MIN: &dxl_min
+            description:
+                short: Dynamixel 1 minimum Goal Position
+                long: Mechanical calibration placeholder. Default uses the XM430 single-turn position range.
+            type: int32
+            min: 0
+            max: 4095
+            default: 0
+        DXL_1_CEN: &dxl_center
+            description:
+                short: Dynamixel 1 center Goal Position
+                long: Mechanical calibration placeholder. Default uses the XM430 single-turn midpoint.
+            type: int32
+            min: 0
+            max: 4095
+            default: 2048
+        DXL_1_MAX: &dxl_max
+            description:
+                short: Dynamixel 1 maximum Goal Position
+                long: Mechanical calibration placeholder. Default uses the XM430 single-turn position range.
+            type: int32
+            min: 0
+            max: 4095
+            default: 4095
+        DXL_1_REV: &dxl_rev
+            description:
+                short: Reverse Dynamixel 1 direction
+            type: boolean
+            default: 0
+        DXL_2_ID:
+            <<: *dxl_id
+            description: { short: Dynamixel 2 ID }
+            default: 2
+        DXL_2_MIN:
+            <<: *dxl_min
+            description: { short: Dynamixel 2 minimum Goal Position }
+        DXL_2_CEN:
+            <<: *dxl_center
+            description: { short: Dynamixel 2 center Goal Position }
+        DXL_2_MAX:
+            <<: *dxl_max
+            description: { short: Dynamixel 2 maximum Goal Position }
+        DXL_2_REV:
+            <<: *dxl_rev
+            description: { short: Reverse Dynamixel 2 direction }
+        DXL_3_ID:
+            <<: *dxl_id
+            description: { short: Dynamixel 3 ID }
+            default: 3
+        DXL_3_MIN:
+            <<: *dxl_min
+            description: { short: Dynamixel 3 minimum Goal Position }
+        DXL_3_CEN:
+            <<: *dxl_center
+            description: { short: Dynamixel 3 center Goal Position }
+        DXL_3_MAX:
+            <<: *dxl_max
+            description: { short: Dynamixel 3 maximum Goal Position }
+        DXL_3_REV:
+            <<: *dxl_rev
+            description: { short: Reverse Dynamixel 3 direction }
+        DXL_4_ID:
+            <<: *dxl_id
+            description: { short: Dynamixel 4 ID }
+            default: 4
+        DXL_4_MIN:
+            <<: *dxl_min
+            description: { short: Dynamixel 4 minimum Goal Position }
+        DXL_4_CEN:
+            <<: *dxl_center
+            description: { short: Dynamixel 4 center Goal Position }
+        DXL_4_MAX:
+            <<: *dxl_max
+            description: { short: Dynamixel 4 maximum Goal Position }
+        DXL_4_REV:
+            <<: *dxl_rev
+            description: { short: Reverse Dynamixel 4 direction }
+        DXL_5_ID:
+            <<: *dxl_id
+            description: { short: Dynamixel 5 ID }
+            default: 5
+        DXL_5_MIN:
+            <<: *dxl_min
+            description: { short: Dynamixel 5 minimum Goal Position }
+        DXL_5_CEN:
+            <<: *dxl_center
+            description: { short: Dynamixel 5 center Goal Position }
+        DXL_5_MAX:
+            <<: *dxl_max
+            description: { short: Dynamixel 5 maximum Goal Position }
+        DXL_5_REV:
+            <<: *dxl_rev
+            description: { short: Reverse Dynamixel 5 direction }
+        DXL_6_ID:
+            <<: *dxl_id
+            description: { short: Dynamixel 6 ID }
+            default: 6
+        DXL_6_MIN:
+            <<: *dxl_min
+            description: { short: Dynamixel 6 minimum Goal Position }
+        DXL_6_CEN:
+            <<: *dxl_center
+            description: { short: Dynamixel 6 center Goal Position }
+        DXL_6_MAX:
+            <<: *dxl_max
+            description: { short: Dynamixel 6 maximum Goal Position }
+        DXL_6_REV:
+            <<: *dxl_rev
+            description: { short: Reverse Dynamixel 6 direction }
+        DXL_7_ID:
+            <<: *dxl_id
+            description: { short: Dynamixel 7 ID }
+            default: 7
+        DXL_7_MIN:
+            <<: *dxl_min
+            description: { short: Dynamixel 7 minimum Goal Position }
+        DXL_7_CEN:
+            <<: *dxl_center
+            description: { short: Dynamixel 7 center Goal Position }
+        DXL_7_MAX:
+            <<: *dxl_max
+            description: { short: Dynamixel 7 maximum Goal Position }
+        DXL_7_REV:
+            <<: *dxl_rev
+            description: { short: Reverse Dynamixel 7 direction }
+        DXL_8_ID:
+            <<: *dxl_id
+            description: { short: Dynamixel 8 ID }
+            default: 8
+        DXL_8_MIN:
+            <<: *dxl_min
+            description: { short: Dynamixel 8 minimum Goal Position }
+        DXL_8_CEN:
+            <<: *dxl_center
+            description: { short: Dynamixel 8 center Goal Position }
+        DXL_8_MAX:
+            <<: *dxl_max
+            description: { short: Dynamixel 8 maximum Goal Position }
+        DXL_8_REV:
+            <<: *dxl_rev
+            description: { short: Reverse Dynamixel 8 direction }

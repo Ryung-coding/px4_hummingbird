@@ -14,5 +14,22 @@ param set-default SENS_EN_THERMAL 1
 
 param set-default HEATER1_SENS_ID 6946850
 
+# ELRS/CRSF receiver on TELEM1. Keep MAVLink off TELEM1 so the CRSF driver owns the port.
+param set-default RC_CRSF_PRT_CFG 101
+param set-default RC_CRSF_TEL_EN 1
+
+# QGroundControl telemetry on UART4, exposed as GPS2 on CUAV X7 Pro.
+param set-default GPS_2_CONFIG 0
+param set-default MAV_0_CONFIG 202
+param set-default MAV_0_MODE 0
+param set-default MAV_0_RATE 0
+param set-default MAV_0_FORWARD 1
+param set-default MAV_0_FLOW_CTRL 0
+param set-default SER_GPS2_BAUD 57600
+
+# Leave other MAVLink instances disabled unless they are explicitly configured for another device.
+param set-default MAV_1_CONFIG 0
+param set-default MAV_2_CONFIG 0
+
 rgbled_pwm start
 safety_button start
