@@ -370,6 +370,88 @@ inline TargetCMD attitudeTuningPath(double t)
   return cmd;
 }
 
+inline TargetCMD steppedAttitudePath(double t)
+{
+  static constexpr double HOVER_SEC = 2.0;
+  static constexpr double ZERO_HOLD_SEC = 2.0;
+  static constexpr double RAMP_SEC = 1.0;
+  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double Z = 0.0;
+
+  static constexpr double SWITCH_DEG = 60.0;
+  static constexpr double FIRST_STEP_DEG = 10.0;
+  static constexpr double SECOND_STEP_DEG = 1.0;
+  static constexpr double MAX_DEG = 90.0;
+  static constexpr double DEG2RAD = M_PI / 180.0;
+
+  static constexpr int FIRST_STAGE_COUNT =
+      static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
+
+  TargetCMD cmd;
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  if (t < HOVER_SEC) {
+    const double a = t / HOVER_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.z = Z * s;
+
+    return cmd;
+  }
+
+  const double tm = t - HOVER_SEC;
+
+  if (tm < ZERO_HOLD_SEC) {
+    return cmd;
+  }
+
+  const double ts = tm - ZERO_HOLD_SEC;
+  const double stage_sec = RAMP_SEC + HOLD_SEC;
+  const int stage = static_cast<int>(std::floor(ts / stage_sec));
+  const double stage_t = std::fmod(ts, stage_sec);
+
+  double start_deg;
+  double target_deg;
+
+  if (stage < FIRST_STAGE_COUNT) {
+    start_deg = stage * FIRST_STEP_DEG;
+    target_deg = start_deg + FIRST_STEP_DEG;
+  } else {
+    const int second_stage = stage - FIRST_STAGE_COUNT;
+
+    start_deg = SWITCH_DEG + second_stage * SECOND_STEP_DEG;
+    target_deg = start_deg + SECOND_STEP_DEG;
+  }
+
+  start_deg = std::min(start_deg, MAX_DEG);
+  target_deg = std::min(target_deg, MAX_DEG);
+
+  const double start_angle = start_deg * DEG2RAD;
+  const double target_angle = target_deg * DEG2RAD;
+
+  if (start_deg >= MAX_DEG) {
+    cmd.pitch = MAX_DEG * DEG2RAD;
+    return cmd;
+  }
+
+  if (stage_t < RAMP_SEC) {
+    const double a = stage_t / RAMP_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.pitch = start_angle + (target_angle - start_angle) * s;
+  } else {
+    cmd.pitch = target_angle;
+  }
+
+  return cmd;
+}
+
 inline TargetCMD agilePath(double t)
 {
   TargetCMD cmd;

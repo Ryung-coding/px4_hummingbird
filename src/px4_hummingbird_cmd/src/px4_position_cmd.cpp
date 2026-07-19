@@ -86,6 +86,7 @@ private:
     if (path_name_ == "track_apple") return utils::trackApple(t);
     if (path_name_ == "take_apple") return utils::takeApple(t);
     if (path_name_ == "attitude_tuning") return utils::attitudeTuningPath(t);
+    if (path_name_ == "stepped_attitude") return utils::steppedAttitudePath(t);
     if (path_name_ == "agile") return utils::agilePath(t);
     if (path_name_ == "position_track") return utils::positionTrack(t);
     if (path_name_ == "hover") return utils::hover(t);
