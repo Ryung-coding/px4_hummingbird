@@ -52,7 +52,6 @@ param set SIM_GZ_EC_FUNC3 103
 param set SIM_GZ_EC_FUNC4 104
 
 # DDS actuator_servos: control[0..3] = theta1..theta4, control[4..7] = phi1..phi4.
-# For now control_allocator publishes all servo controls as 0.
 # Servo commands are exported through DDS and forwarded to Gazebo by the
 # px4_hummingbird ROS bridge to avoid double publishing on /model/.../servo_*.
 param set-default SIM_GZ_SV_FUNC1 0

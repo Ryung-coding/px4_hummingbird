@@ -111,10 +111,9 @@ bool ScPositionControl::update(const float dt)
 
 void ScPositionControl::_positionControl(const float dt)
 {
-	// Constrain vertical velocity integral
-	_pos_int(0) = math::constrain(_vel_int(0), -_pos_int_lim, _pos_int_lim);
-	_pos_int(1) = math::constrain(_vel_int(1), -_pos_int_lim, _pos_int_lim);
-	_pos_int(2) = math::constrain(_vel_int(2), -_pos_int_lim, _pos_int_lim);
+	_pos_int(0) = math::constrain(_pos_int(0), -_pos_int_lim, _pos_int_lim);
+	_pos_int(1) = math::constrain(_pos_int(1), -_pos_int_lim, _pos_int_lim);
+	_pos_int(2) = math::constrain(_pos_int(2), -_pos_int_lim, _pos_int_lim);
 
 	// P-position controller
 	ControlMath::setZeroIfNanVector3f(_pos_sp);
@@ -122,7 +121,7 @@ void ScPositionControl::_positionControl(const float dt)
 	Vector3f vel_sp_position = pos_error.emult(_gain_pos_p) + _pos_int;
 
 	// Update integral part of position control
-	_vel_int += pos_error.emult(_gain_pos_i) * dt;
+	_pos_int += pos_error.emult(_gain_pos_i) * dt;
 
 	// Position and feed-forward velocity setpoints or position states being NAN results in them not having an influence
 	ControlMath::addIfNotNanVector3f(_vel_sp, vel_sp_position);

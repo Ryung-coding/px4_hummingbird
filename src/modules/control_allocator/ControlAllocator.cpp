@@ -55,14 +55,14 @@ namespace
 {
 constexpr float kHummingBirdLx = 0.1861f;
 constexpr float kHummingBirdLy = 0.1861f;
-constexpr float kHummingBirdD = 0.0500f;
 constexpr float kHummingBirdZeta = 0.0200f;
 constexpr float kHummingBirdVirtualLambda = 1.0e-4f;
 constexpr float kHummingBirdFMin = 1.0e-3f;
 constexpr float kHummingBirdMaxRotVelocity = 1000.0f;
-constexpr float kHummingBirdMaxRotorThrust = 12.0f;
+constexpr float kHummingBirdMaxRotorThrust = 24.0f;
 constexpr float kHummingBirdMaxTotalThrust = 4.0f * kHummingBirdMaxRotorThrust;
-constexpr float kHummingBirdMaxMoment = kHummingBirdMaxTotalThrust * kHummingBirdLx;
+constexpr float kHummingBirdTorqueScaleRotorThrust = 12.0f;
+constexpr float kHummingBirdMaxMoment = 4.0f * kHummingBirdTorqueScaleRotorThrust * kHummingBirdLx;
 constexpr float kHummingBirdThetaLimitRad = M_PI_F;
 constexpr float kHummingBirdPhiLimitRad = M_PI_F / 6.0f;
 
@@ -73,135 +73,72 @@ struct HummingBirdAllocationOutput
 	matrix::Vector<float, 4> phi{};
 };
 
-float mean_angle(float a, float b)
+HummingBirdAllocationOutput allocation_P2T2_renewal(const matrix::Vector3f &moment_cmd,
+		const matrix::Vector3f &force_cmd)
 {
-	return atan2f(sinf(a) + sinf(b), cosf(a) + cosf(b));
-}
+	using Matrix44f = matrix::Matrix<float, 4, 4>;
+	using Vector4f = matrix::Vector<float, 4>;
 
-HummingBirdAllocationOutput allocation_P2T2(const matrix::Vector3f &moment_cmd, const matrix::Vector3f &force_cmd,
-		const matrix::Vector<float, 4> &theta_measured, const matrix::Vector<float, 4> &phi_measured)
-{
-	using Matrix68f = matrix::Matrix<float, 6, 8>;
-	using Vector6f = matrix::Vector<float, 6>;
-	using Vector8f = matrix::Vector<float, 8>;
+	const float force_norm_raw = force_cmd.norm();
+	const float force_norm = math::max(force_norm_raw, kHummingBirdFMin);
+	matrix::Vector3f common_dir = force_cmd / force_norm;
 
-	const float theta_front = mean_angle(theta_measured(0), theta_measured(3));
-	const float theta_back = mean_angle(theta_measured(1), theta_measured(2));
+	if (force_norm_raw <= kHummingBirdFMin) {
+		common_dir(0) = 0.0f;
+		common_dir(1) = 0.0f;
+		common_dir(2) = -1.0f;
+	}
 
-	const float phi14 = 0.5f * (phi_measured(0) + phi_measured(3));
-	const float phi23 = 0.5f * (phi_measured(1) + phi_measured(2));
+	const float theta_common = math::constrain(atan2f(-common_dir(0), -common_dir(2)),
+				     -kHummingBirdThetaLimitRad, kHummingBirdThetaLimitRad);
+	const float phi_common = math::constrain(asinf(math::constrain(common_dir(1), -1.0f, 1.0f)),
+				   -kHummingBirdPhiLimitRad, kHummingBirdPhiLimitRad);
 
-	const float front_ex = -sinf(theta_front) * cosf(phi14);
-	const float front_ey = sinf(phi14);
-	const float front_ez = -cosf(theta_front) * cosf(phi14);
+	matrix::Vector3f e_cmd{};
+	e_cmd(0) = -sinf(theta_common) * cosf(phi_common);
+	e_cmd(1) = sinf(phi_common);
+	e_cmd(2) = -cosf(theta_common) * cosf(phi_common);
 
-	const float back_ex = -sinf(theta_back) * cosf(phi23);
-	const float back_ey = sinf(phi23);
-	const float back_ez = -cosf(theta_back) * cosf(phi23);
+	const matrix::Vector3f rotor_pos[4] = {
+		{kHummingBirdLx,  kHummingBirdLy, 0.0f},
+		{-kHummingBirdLx, kHummingBirdLy, 0.0f},
+		{-kHummingBirdLx, -kHummingBirdLy, 0.0f},
+		{kHummingBirdLx, -kHummingBirdLy, 0.0f},
+	};
 
-	const float front_x = kHummingBirdLx - kHummingBirdD * cosf(phi14) * sinf(theta_front);
-	const float front_y = kHummingBirdD * sinf(phi14);
+	const float spin[4] = {1.0f, -1.0f, 1.0f, -1.0f};
 
-	const float back_x = -kHummingBirdLx - kHummingBirdD * cosf(phi23) * sinf(theta_back);
-	const float back_y = kHummingBirdD * sinf(phi23);
+	Matrix44f B{};
 
-	Matrix68f A{};
+	for (int i = 0; i < 4; ++i) {
+		const matrix::Vector3f moment_per_newton = rotor_pos[i].cross(e_cmd) - spin[i] * kHummingBirdZeta * e_cmd;
+		B(0, i) = moment_per_newton(0);
+		B(1, i) = moment_per_newton(1);
+		B(2, i) = moment_per_newton(2);
+		B(3, i) = 1.0f;
+	}
 
-	A(0, 2) = front_y;
-	A(0, 5) = back_y;
-	A(0, 6) = kHummingBirdLy * front_ez - kHummingBirdZeta * front_ex;
-	A(0, 7) = kHummingBirdLy * back_ez + kHummingBirdZeta * back_ex;
+	Vector4f target{};
+	target(0) = moment_cmd(0);
+	target(1) = moment_cmd(1);
+	target(2) = moment_cmd(2);
+	target(3) = force_norm;
 
-	A(1, 2) = -front_x;
-	A(1, 5) = -back_x;
-	A(1, 6) = -kHummingBirdZeta * front_ey;
-	A(1, 7) = kHummingBirdZeta * back_ey;
+	matrix::SquareMatrix<float, 4> H = B * B.T();
 
-	A(2, 0) = -front_y;
-	A(2, 1) = front_x;
-	A(2, 3) = -back_y;
-	A(2, 4) = back_x;
-	A(2, 6) = -kHummingBirdLy * front_ex - kHummingBirdZeta * front_ez;
-	A(2, 7) = -kHummingBirdLy * back_ex + kHummingBirdZeta * back_ez;
-
-	A(3, 0) = 1.0f;
-	A(3, 3) = 1.0f;
-
-	A(4, 1) = 1.0f;
-	A(4, 4) = 1.0f;
-
-	A(5, 2) = 1.0f;
-	A(5, 5) = 1.0f;
-
-	Vector6f wrench{};
-	wrench(0) = moment_cmd(0);
-	wrench(1) = moment_cmd(1);
-	wrench(2) = moment_cmd(2);
-	wrench(3) = force_cmd(0);
-	wrench(4) = force_cmd(1);
-	wrench(5) = force_cmd(2);
-
-	matrix::SquareMatrix<float, 6> H = A * A.T();
-
-	for (int i = 0; i < 6; ++i) {
+	for (int i = 0; i < 4; ++i) {
 		H(i, i) += kHummingBirdVirtualLambda * kHummingBirdVirtualLambda;
 	}
 
-	const Vector8f virtual_force = A.T() * H.I() * wrench;
-
-	matrix::Vector3f front_force{};
-	front_force(0) = virtual_force(0);
-	front_force(1) = virtual_force(1);
-	front_force(2) = virtual_force(2);
-
-	matrix::Vector3f back_force{};
-	back_force(0) = virtual_force(3);
-	back_force(1) = virtual_force(4);
-	back_force(2) = virtual_force(5);
-
-	const float front_force_norm = front_force.norm();
-	const float back_force_norm = back_force.norm();
-	const float f_front = math::max(front_force_norm, kHummingBirdFMin);
-	const float f_back = math::max(back_force_norm, kHummingBirdFMin);
-
-	matrix::Vector3f front_dir = front_force / f_front;
-	matrix::Vector3f back_dir = back_force / f_back;
-
-	if (front_force_norm <= kHummingBirdFMin) {
-		front_dir(0) = 0.0f;
-		front_dir(1) = 0.0f;
-		front_dir(2) = -1.0f;
-	}
-
-	if (back_force_norm <= kHummingBirdFMin) {
-		back_dir(0) = 0.0f;
-		back_dir(1) = 0.0f;
-		back_dir(2) = -1.0f;
-	}
-
-	const float theta1 = math::constrain(atan2f(-front_dir(0), -front_dir(2)), -kHummingBirdThetaLimitRad, kHummingBirdThetaLimitRad);
-	const float theta2 = math::constrain(atan2f(-back_dir(0), -back_dir(2)), -kHummingBirdThetaLimitRad, kHummingBirdThetaLimitRad);
-	const float phi14_cmd = math::constrain(asinf(math::constrain(front_dir(1), -1.0f, 1.0f)), -kHummingBirdPhiLimitRad, kHummingBirdPhiLimitRad);
-	const float phi23_cmd = math::constrain(asinf(math::constrain(back_dir(1), -1.0f, 1.0f)), -kHummingBirdPhiLimitRad, kHummingBirdPhiLimitRad);
-
-	const float df14 = math::constrain(virtual_force(6), -f_front + kHummingBirdFMin, f_front - kHummingBirdFMin);
-	const float df23 = math::constrain(virtual_force(7), -f_back + kHummingBirdFMin, f_back - kHummingBirdFMin);
+	const Vector4f thrust_raw = B.T() * H.I() * target;
 
 	HummingBirdAllocationOutput out{};
-	out.f(0) = math::constrain(0.5f * (f_front + df14), 0.0f, kHummingBirdMaxRotorThrust);
-	out.f(3) = math::constrain(0.5f * (f_front - df14), 0.0f, kHummingBirdMaxRotorThrust);
-	out.f(1) = math::constrain(0.5f * (f_back + df23), 0.0f, kHummingBirdMaxRotorThrust);
-	out.f(2) = math::constrain(0.5f * (f_back - df23), 0.0f, kHummingBirdMaxRotorThrust);
 
-	out.theta(0) = theta1;
-	out.theta(1) = theta2;
-	out.theta(2) = theta2;
-	out.theta(3) = theta1;
-
-	out.phi(0) = phi14_cmd;
-	out.phi(1) = phi23_cmd;
-	out.phi(2) = phi23_cmd;
-	out.phi(3) = phi14_cmd;
+	for (int i = 0; i < 4; ++i) {
+		out.f(i) = math::constrain(thrust_raw(i), 0.0f, kHummingBirdMaxRotorThrust);
+		out.theta(i) = theta_common;
+		out.phi(i) = phi_common;
+	}
 
 	return out;
 }
@@ -879,8 +816,7 @@ ControlAllocator::publish_hummingbird_actuator_controls()
 	matrix::Vector3f moment_cmd = _torque_sp * kHummingBirdMaxMoment;
 	matrix::Vector3f force_cmd = _thrust_sp * kHummingBirdMaxTotalThrust;
 
-	const HummingBirdAllocationOutput allocation = allocation_P2T2(moment_cmd, force_cmd,
-			_hummingbird_theta_sp, _hummingbird_phi_sp);
+	const HummingBirdAllocationOutput allocation = allocation_P2T2_renewal(moment_cmd, force_cmd);
 
 	_hummingbird_motor_sp = allocation.f;
 	_hummingbird_theta_sp = allocation.theta;
@@ -906,6 +842,36 @@ ControlAllocator::publish_hummingbird_actuator_controls()
 	for (int i = 0; i < 4; ++i) {
 		actuator_servos.control[i] = math::constrain(_hummingbird_theta_sp(i) / kHummingBirdThetaLimitRad, -1.0f, 1.0f);
 		actuator_servos.control[i + 4] = math::constrain(_hummingbird_phi_sp(i) / kHummingBirdPhiLimitRad, -1.0f, 1.0f);
+	}
+
+	// HB DEBUG: remove after high-pitch SITL allocation diagnosis.
+	static hrt_abstime last_hb_debug_pub{0};
+	const bool high_theta = fabsf(_hummingbird_theta_sp(0)) > math::radians(70.0f);
+	const bool motor_saturated = _hummingbird_motor_sp(0) > 0.98f * kHummingBirdMaxRotorThrust
+				     || _hummingbird_motor_sp(1) > 0.98f * kHummingBirdMaxRotorThrust
+				     || _hummingbird_motor_sp(2) > 0.98f * kHummingBirdMaxRotorThrust
+				     || _hummingbird_motor_sp(3) > 0.98f * kHummingBirdMaxRotorThrust;
+
+	if ((high_theta || motor_saturated) && hrt_elapsed_time(&last_hb_debug_pub) > 200_ms) {
+		last_hb_debug_pub = actuator_motors.timestamp;
+		const float pitch_moment_per_newton = kHummingBirdLx * cosf(_hummingbird_theta_sp(0)) * cosf(_hummingbird_phi_sp(0));
+		const float pitch_delta_required = fabsf(moment_cmd(1)) / math::max(fabsf(pitch_moment_per_newton), 1.0e-3f);
+		const float pitch_high_rotor_required = 0.25f * force_cmd.norm() + 0.5f * pitch_delta_required;
+		PX4_INFO("HB DEBUG sp tau %.3f %.3f %.3f force %.3f %.3f %.3f | f %.2f %.2f %.2f %.2f",
+			 (double)moment_cmd(0), (double)moment_cmd(1), (double)moment_cmd(2),
+			 (double)force_cmd(0), (double)force_cmd(1), (double)force_cmd(2),
+			 (double)_hummingbird_motor_sp(0), (double)_hummingbird_motor_sp(1),
+			 (double)_hummingbird_motor_sp(2), (double)_hummingbird_motor_sp(3));
+		PX4_INFO("HB DEBUG theta %.1f %.1f %.1f %.1f phi %.1f %.1f %.1f %.1f motor_norm %.3f %.3f %.3f %.3f",
+			 (double)math::degrees(_hummingbird_theta_sp(0)), (double)math::degrees(_hummingbird_theta_sp(1)),
+			 (double)math::degrees(_hummingbird_theta_sp(2)), (double)math::degrees(_hummingbird_theta_sp(3)),
+			 (double)math::degrees(_hummingbird_phi_sp(0)), (double)math::degrees(_hummingbird_phi_sp(1)),
+			 (double)math::degrees(_hummingbird_phi_sp(2)), (double)math::degrees(_hummingbird_phi_sp(3)),
+			 (double)actuator_motors.control[0], (double)actuator_motors.control[1],
+			 (double)actuator_motors.control[2], (double)actuator_motors.control[3]);
+		PX4_INFO("HB DEBUG pitch_auth %.4f NmpN delta_req %.2f high_req %.2f max %.2f",
+			 (double)pitch_moment_per_newton, (double)pitch_delta_required,
+			 (double)pitch_high_rotor_required, (double)kHummingBirdMaxRotorThrust);
 	}
 
 	_actuator_motors_pub.publish(actuator_motors);
