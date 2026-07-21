@@ -1,9 +1,10 @@
-#include <array>
 #include <chrono>
-#include <cmath>
+#include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <string>
+#include <Eigen/Core>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -18,531 +19,442 @@
 #include <params.hpp>
 #include <utils.hpp>
 
-class Px4PositionCmd : public rclcpp::Node
+
+class Px4PositionCommand : public rclcpp::Node
 {
 public:
-  Px4PositionCmd()
+  Px4PositionCommand()
   : rclcpp::Node("px4_position_cmd")
   {
-    path_name_ = this->declare_parameter<std::string>("path", "position_tuning");
-    auto_offboard_ = this->declare_parameter<bool>("auto_offboard", false);
-    auto_arm_ = this->declare_parameter<bool>("auto_arm", false);
-    require_vehicle_status_ = this->declare_parameter<bool>("require_vehicle_status", true);
-    require_vehicle_local_position_ = this->declare_parameter<bool>("require_vehicle_local_position", true);
-    require_hb_cmd_source_dds_ = this->declare_parameter<bool>("require_hb_cmd_source_dds", true);
-    hummingbird_status_topic_ = this->declare_parameter<std::string>("hummingbird_status_topic", "/fmu/out/hummingbird_status");
-    manual_control_topic_ = this->declare_parameter<std::string>("manual_control_topic", "/fmu/out/manual_control_setpoint");
-    vehicle_local_position_topic_ = this->declare_parameter<std::string>("vehicle_local_position_topic", "/fmu/out/vehicle_local_position_v1");
-    vehicle_status_topic_ = this->declare_parameter<std::string>("vehicle_status_topic", "/fmu/out/vehicle_status_v4");
-    handoff_duration_sec_ = this->declare_parameter<double>("handoff_duration_sec", 2.0);
-    handoff_position_offset_m_ = this->declare_parameter<double>("handoff_position_offset_m", 0.6);
-    handoff_yaw_offset_rad_ = this->declare_parameter<double>("handoff_yaw_offset_rad", 0.35);
-    command_delay_sec_ = this->declare_parameter<double>("command_delay_sec", 2.0);
-    command_repeat_sec_ = this->declare_parameter<double>("command_repeat_sec", 1.0);
-    status_timeout_sec_ = this->declare_parameter<double>("status_timeout_sec", 1.0);
-    target_system_ = this->declare_parameter<int>("target_system", 1);
-    target_component_ = this->declare_parameter<int>("target_component", 1);
-    source_system_ = this->declare_parameter<int>("source_system", 1);
-    source_component_ = this->declare_parameter<int>("source_component", 1);
+    trajectory_name_ = this->declare_parameter<std::string>("path", "position_tuning");
+    auto_offboard_   = this->declare_parameter<bool>("auto_offboard", false);
+    auto_arm_        = this->declare_parameter<bool>("auto_arm", false);
 
-    offboard_pub_        = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
-    trajectory6dof_pub_  = this->create_publisher<px4_msgs::msg::TrajectorySetpoint6dof>("/fmu/in/trajectory_setpoint6dof", 10);
-    vehicle_command_pub_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("/fmu/in/vehicle_command", 10);
-    
-    const auto status_qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort();
-    
-    hummingbird_status_sub_     = this->create_subscription<px4_msgs::msg::HummingbirdStatus>(hummingbird_status_topic_, status_qos, std::bind(&Px4PositionCmd::hummingbirdStatusCallback, this, std::placeholders::_1));
-    manual_control_sub_         = this->create_subscription<px4_msgs::msg::ManualControlSetpoint>(manual_control_topic_, status_qos, std::bind(&Px4PositionCmd::manualControlCallback, this, std::placeholders::_1));
-    vehicle_local_position_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(vehicle_local_position_topic_, status_qos, std::bind(&Px4PositionCmd::vehicleLocalPositionCallback, this, std::placeholders::_1));
-    vehicle_status_sub_         = this->create_subscription<px4_msgs::msg::VehicleStatus>(vehicle_status_topic_, status_qos, std::bind(&Px4PositionCmd::vehicleStatusCallback, this, std::placeholders::_1));
+    offboard_mode_publisher_   = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
+    trajectory_publisher_      = this->create_publisher<px4_msgs::msg::TrajectorySetpoint6dof>("/fmu/in/trajectory_setpoint6dof", 10);
+    vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("/fmu/in/vehicle_command", 10);
 
-    const auto period = std::chrono::nanoseconds(static_cast<int64_t>(1.0e9 / static_cast<double>(params::RATE_HZ)));
+    // 통신 품질 설정(QoS, Quality of Service)
+    const auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort();
 
-    t0_ = std::chrono::steady_clock::now();
-    last_status_time_ = t0_;
-    last_hummingbird_status_time_ = t0_;
-    last_manual_control_time_ = t0_;
-    last_vehicle_local_position_time_ = t0_;
-    timer_ = this->create_wall_timer(period, std::bind(&Px4PositionCmd::onTick, this));
+    // For px4_multirotor_viewer.py
+    hummingbird_status_subscription_ = this->create_subscription<px4_msgs::msg::HummingbirdStatus>("/fmu/out/hummingbird_status", qos, std::bind(&Px4PositionCommand::controller_mode_callback, this, std::placeholders::_1));
+    manual_control_subscription_     = this->create_subscription<px4_msgs::msg::ManualControlSetpoint>("/fmu/out/manual_control_setpoint", qos, std::bind(&Px4PositionCommand::RC_callback, this, std::placeholders::_1));
+    local_position_subscription_     = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>("/fmu/out/vehicle_local_position_v1", qos, std::bind(&Px4PositionCommand::local_position_callback, this, std::placeholders::_1));
+    vehicle_status_subscription_     = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status_v4", qos, std::bind(&Px4PositionCommand::vehicle_status_callback, this, std::placeholders::_1));
+
+
+    const auto timer_period = std::chrono::nanoseconds(static_cast<int64_t>(1.0e9 / static_cast<double>(params::RATE_HZ)));
+
+    // Initialize timestamps
+    node_start_time_ = std::chrono::steady_clock::now();
+    last_controller_mode_time_ = node_start_time_;
+    last_RC_cmd_time_ = node_start_time_;
+    last_local_position_time_ = node_start_time_;
+    last_vehicle_status_time_ = node_start_time_;
+
+    // Control Timer (Main Loop)
+    control_timer_ = this->create_wall_timer(timer_period, std::bind(&Px4PositionCommand::on_tick, this));
   }
 
 private:
-  enum class StartupState
+  enum class ControlMode
   {
-    WaitBeforeOffboard,
-    WaitForOffboard,
-    WaitForArm,
-    PositionActive
+    wait_offboard,
+    wait_arm,
+    path_active,
+    DDS2RC_handoff,
+    RC2DDS_handoff
   };
 
-  uint64_t timestampMicros() const
+  // DDS= or RC= (hb_cmd_source)
+  void controller_mode_callback(const px4_msgs::msg::HummingbirdStatus::SharedPtr message)
   {
-    const auto now = this->get_clock()->now();
-    return static_cast<uint64_t>(now.nanoseconds() / 1000);
+    controller_mode_ = *message;
+    has_controller_mode_ = true;
+    last_controller_mode_time_ = std::chrono::steady_clock::now();
   }
 
-  utils::TargetCMD pathCommand(double t) const
+  // RC cmd
+  void RC_callback(const px4_msgs::msg::ManualControlSetpoint::SharedPtr message)
   {
-    if (path_name_ == "track_apple") return utils::trackApple(t);
-    if (path_name_ == "take_apple") return utils::takeApple(t);
-    if (path_name_ == "attitude_tuning") return utils::attitudeTuningPath(t);
-    if (path_name_ == "stepped_attitude") return utils::steppedAttitudePath(t);
-    if (path_name_ == "agile") return utils::agilePath(t);
-    if (path_name_ == "position_track") return utils::positionTrack(t);
-    if (path_name_ == "hover") return utils::hover(t);
-    return utils::positionTuningPath(t);
+    RC_cmd = *message;
+    has_RC_cmd_ = true;
+    last_RC_cmd_time_ = std::chrono::steady_clock::now();
   }
 
-  void hummingbirdStatusCallback(const px4_msgs::msg::HummingbirdStatus::SharedPtr msg)
+  // Local Position (x,y,z,heading)
+  void local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr message)
   {
-    hummingbird_status_ = *msg;
-    hummingbird_status_received_ = true;
-    last_hummingbird_status_time_ = std::chrono::steady_clock::now();
+    local_position_ = *message;
+    has_local_position_ = true;
+    last_local_position_time_ = std::chrono::steady_clock::now();
   }
 
-  void manualControlCallback(const px4_msgs::msg::ManualControlSetpoint::SharedPtr msg)
+  // PX4 status, Offboard on/off, Armming on/off, Navigation state
+  void vehicle_status_callback(const px4_msgs::msg::VehicleStatus::SharedPtr message)
   {
-    manual_control_ = *msg;
-    manual_control_received_ = true;
-    last_manual_control_time_ = std::chrono::steady_clock::now();
+    vehicle_status_ = *message;
+    has_vehicle_status_ = true;
+    last_vehicle_status_time_ = std::chrono::steady_clock::now();
   }
 
-  void vehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
+  void wait_offboard(uint64_t timestamp_us, double elapsed_sec)
   {
-    vehicle_local_position_ = *msg;
-    vehicle_local_position_received_ = true;
-    last_vehicle_local_position_time_ = std::chrono::steady_clock::now();
-  }
+    if (elapsed_sec < params::command_delay_sec) return;
 
-  void vehicleStatusCallback(const px4_msgs::msg::VehicleStatus::SharedPtr msg)
-  {
-    vehicle_status_ = *msg;
-    vehicle_status_received_ = true;
-    last_status_time_ = std::chrono::steady_clock::now();
-  }
+    const bool offboard_mode_active = vehicle_status_.nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
 
-  bool hbDdsCommandSourceFresh() const
-  {
-    if (!require_hb_cmd_source_dds_) return true;
-    if (!hummingbird_status_received_) return false;
+    // offboard request
+    if (!offboard_mode_active) 
+    {
+      if (auto_offboard_ && elapsed_sec - last_offboard_request_time_sec_ >= params::command_repeat_sec) 
+      {
+        px4_msgs::msg::VehicleCommand message{};
 
-    const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_hummingbird_status_time_).count();
-    
-    return age <= status_timeout_sec_;
-  }
+        message.timestamp = timestamp_us;
+        message.param1 = 1.0F;
+        message.param2 = 6.0F;
+        message.command = px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE;
+        message.target_system = params::target_system_id;
+        message.target_component = params::target_component_id;
+        message.source_system = params::source_system_id;
+        message.source_component = params::source_component_id;
+        message.confirmation = 0;
+        message.from_external = true;
 
-  bool hbDdsCommandEnabled() const
-  {
-    return !require_hb_cmd_source_dds_ || (hbDdsCommandSourceFresh() && hummingbird_status_.hb_cmd_source == px4_msgs::msg::HummingbirdStatus::HB_CMD_SOURCE_DDS);
-  }
+        vehicle_command_publisher_->publish(message);
 
-  bool manualControlFresh() const
-  {
-    if (!manual_control_received_ || !manual_control_.valid) return false;
+        last_offboard_request_time_sec_ = elapsed_sec;
 
-    const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_manual_control_time_).count();
-    
-    return age <= status_timeout_sec_;
-  }
-
-  bool vehicleLocalPositionFresh() const
-  {
-    if (!vehicle_local_position_received_ || !vehicle_local_position_.xy_valid || !vehicle_local_position_.z_valid) return false;
-
-    const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_vehicle_local_position_time_).count();
-    
-    return age <= status_timeout_sec_;
-  }
-
-  bool localPositionReadyForTrajectoryOrigin() const
-  {
-    return !require_vehicle_local_position_ || vehicleLocalPositionFresh();
-  }
-
-  void captureTrajectoryOrigin(double t)
-  {
-    trajectory_origin_x_ned_ = vehicle_local_position_.x;
-    trajectory_origin_y_ned_ = vehicle_local_position_.y;
-    trajectory_origin_altitude_up_ = -vehicle_local_position_.z;
-    trajectory_start_time_sec_ = t;
-    trajectory_origin_valid_ = true;
-
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Trajectory origin captured: x=%.3f, y=%.3f, z_up=%.3f, t0=%.3f",
-      trajectory_origin_x_ned_,
-      trajectory_origin_y_ned_,
-      trajectory_origin_altitude_up_,
-      trajectory_start_time_sec_);
-  }
-
-  void captureCommandSourceStart(double t)
-  {
-    hb_cmd_source_enable_time_sec_ = t;
-    hb_cmd_source_enable_time_valid_ = true;
-
-    if (localPositionReadyForTrajectoryOrigin()) {
-      captureTrajectoryOrigin(t);
-    } else {
-      trajectory_origin_valid_ = false;
-      RCLCPP_WARN(
-        this->get_logger(),
-        "HB_CMD_SOURCE=1 detected, but vehicle_local_position is not fresh yet.");
+        RCLCPP_INFO(this->get_logger(), "Offboard mode command sent.");
+      }
+      return;
     }
+
+    RCLCPP_INFO(this->get_logger(), "Offboard mode confirmed.");
+
+    control_mode_ = ControlMode::wait_arm;
+    wait_arm(timestamp_us, elapsed_sec);
   }
 
-  utils::TargetCMD applyTrajectoryOrigin(const utils::TargetCMD& relative_cmd) const
+  void wait_arm(uint64_t timestamp_us, double elapsed_sec)
   {
-    utils::TargetCMD absolute_cmd = relative_cmd;
-    absolute_cmd.x = trajectory_origin_x_ned_ + relative_cmd.x;
-    absolute_cmd.y = trajectory_origin_y_ned_ + relative_cmd.y;
-    absolute_cmd.z = trajectory_origin_altitude_up_ + relative_cmd.z;
-    return absolute_cmd;
+    const bool vehicle_armed = vehicle_status_.arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+
+    // Arm request
+    if (!vehicle_armed) 
+    {
+      if (auto_arm_ && elapsed_sec - last_arm_request_time_sec_ >= params::message_timeout_sec + params::command_repeat_sec) 
+      {
+        px4_msgs::msg::VehicleCommand message{};
+
+        message.timestamp = timestamp_us;
+        message.param1 = 1.0F;
+        message.command = px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM;
+        message.target_system = params::target_system_id;
+        message.target_component = params::target_component_id;
+        message.source_system = params::source_system_id;
+        message.source_component = params::source_component_id;
+        message.confirmation = 0;
+        message.from_external = true;
+
+        vehicle_command_publisher_->publish(message);
+
+        last_arm_request_time_sec_ = elapsed_sec;
+
+        RCLCPP_INFO(this->get_logger(), "Arm command sent.");
+      }
+
+      return;
+    }
+
+    // update trajectory origin
+    if (!has_trajectory_origin_) 
+    {
+      pos_x = local_position_.x;
+      pos_y = local_position_.y;
+      pos_z = -local_position_.z;
+      trajectory_start_time_sec_ = has_dds_control_start_time_ ? dds_control_start_time_sec_ : elapsed_sec;
+      has_trajectory_origin_ = true;
+    }
+
+    control_mode_ = ControlMode::path_active;
+
+    RCLCPP_INFO(this->get_logger(), "Vehicle armed. Path setpoint publishing started.");
   }
 
-  bool vehicleStatusFresh(double t) const
+  void path_active(uint64_t timestamp_us, double elapsed_sec)
   {
-    if (!require_vehicle_status_) return true;
-    if (!vehicle_status_received_) return false;
+    const double trajectory_time_sec = elapsed_sec - trajectory_start_time_sec_;
 
-    const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_status_time_).count();
-    
-    return age <= status_timeout_sec_ && t >= command_delay_sec_;
-  }
+    utils::TargetCMD path_target{};
 
-  bool offboardReady() const
-  {
-    return !require_vehicle_status_ || vehicle_status_.nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
-  }
+    if      (trajectory_name_ == "position_tuning")  path_target = utils::positionTuningPath(trajectory_time_sec);
+    else if (trajectory_name_ == "attitude_tuning")  path_target = utils::attitudeTuningPath(trajectory_time_sec);
+    else if (trajectory_name_ == "stepped_attitude") path_target = utils::steppedAttitudePath(trajectory_time_sec);
+    else if (trajectory_name_ == "agile")            path_target = utils::agilePath(trajectory_time_sec);
+    else if (trajectory_name_ == "position_track")   path_target = utils::positionTrack(trajectory_time_sec);
+    else if (trajectory_name_ == "hover")            path_target = utils::hover(trajectory_time_sec);
+    else path_target = utils::hover(trajectory_time_sec);
 
-  bool armReady() const
-  {
-    return !require_vehicle_status_ || vehicle_status_.arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
-  }
+    utils::TargetCMD target = path_target;
 
-  bool readyForPositionSetpoint() const
-  {
-    return offboardReady() && armReady();
-  }
+    target.x = pos_x + path_target.x;
+    target.y = pos_y + path_target.y;
+    target.z = pos_z + path_target.z;
 
-  bool commandIntervalElapsed(double t, double last_command_time) const
-  {
-    return (t - last_command_time) >= command_repeat_sec_;
-  }
+    last_target_ = target;
 
-  void publishOffboardControlMode(uint64_t timestamp_us)
-  {
-    px4_msgs::msg::OffboardControlMode msg;
-    msg.timestamp = timestamp_us;
-    msg.position = true;
-    msg.velocity = false;
-    msg.acceleration = false;
-    msg.attitude = false;
-    msg.body_rate = false;
-    msg.thrust_and_torque = false;
-    msg.direct_actuator = false;
-    offboard_pub_->publish(msg);
-  }
 
-  void publishTrajectorySetpoint6dof(uint64_t timestamp_us, const utils::TargetCMD& cmd)
-  {
-    px4_msgs::msg::TrajectorySetpoint6dof msg;
-    msg.timestamp = timestamp_us;
-
-    msg.position = {
-      static_cast<float>(cmd.x),
-      static_cast<float>(cmd.y),
-      static_cast<float>(-cmd.z)
-    };
+    // Publish trajectory setpoint
+    px4_msgs::msg::TrajectorySetpoint6dof message{};
 
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    msg.velocity = {nan, nan, nan};
-    msg.acceleration = {nan, nan, nan};
-    msg.jerk = {nan, nan, nan};
+    const Eigen::Vector4d quaternion = utils::rpyToQuat(Eigen::Vector3d(target.roll, target.pitch, target.yaw));
 
-    const Eigen::Vector4d q = utils::rpyToQuat(Eigen::Vector3d(cmd.roll, cmd.pitch, cmd.yaw));
-    msg.quaternion = {
-      static_cast<float>(q(0)),
-      static_cast<float>(q(1)),
-      static_cast<float>(q(2)),
-      static_cast<float>(q(3))
-    };
-    msg.angular_velocity = {nan, nan, nan};
+    message.timestamp = timestamp_us;
+    message.position = {static_cast<float>(target.x), static_cast<float>(target.y), static_cast<float>(-target.z)};
+    message.velocity = {nan, nan, nan};
+    message.acceleration = {nan, nan, nan};
+    message.jerk = {nan, nan, nan};
+    message.quaternion = {static_cast<float>(quaternion(0)), static_cast<float>(quaternion(1)),static_cast<float>(quaternion(2)),static_cast<float>(quaternion(3))};
+    message.angular_velocity = {nan, nan, nan};
 
-    trajectory6dof_pub_->publish(msg);
+    trajectory_publisher_->publish(message);
   }
 
-  void publishVehicleCommand(uint64_t timestamp_us, uint32_t command, float param1, float param2 = 0.0F, float param3 = 0.0F)
+  void DDS2RC_handoff(uint64_t timestamp_us, double elapsed_sec)
   {
-    px4_msgs::msg::VehicleCommand msg;
-    msg.timestamp = timestamp_us;
-    msg.param1 = param1;
-    msg.param2 = param2;
-    msg.param3 = param3;
-    msg.param4 = 0.0F;
-    msg.param5 = 0.0;
-    msg.param6 = 0.0;
-    msg.param7 = 0.0F;
-    msg.command = command;
-    msg.target_system = static_cast<uint8_t>(target_system_);
-    msg.target_component = static_cast<uint8_t>(target_component_);
-    msg.source_system = static_cast<uint8_t>(source_system_);
-    msg.source_component = static_cast<uint16_t>(source_component_);
-    msg.confirmation = 0;
-    msg.from_external = true;
+    const auto current_time = std::chrono::steady_clock::now();
+    const double manual_control_age_sec = std::chrono::duration<double>(current_time - last_RC_cmd_time_).count();
+    const double local_position_age_sec = std::chrono::duration<double>(current_time - last_local_position_time_).count();
 
-    vehicle_command_pub_->publish(msg);
+    const bool manual_control_fresh = has_RC_cmd_ && RC_cmd.valid && manual_control_age_sec <= params::message_timeout_sec;
+    const bool local_position_fresh = has_local_position_ && local_position_.xy_valid && local_position_.z_valid && local_position_age_sec <= params::message_timeout_sec;
+
+    const double manual_roll = manual_control_fresh ? RC_cmd.roll : 0.0;
+    const double manual_pitch = manual_control_fresh ? RC_cmd.pitch : 0.0;
+    const double manual_yaw = manual_control_fresh ? RC_cmd.yaw : 0.0;
+
+    const double current_x_ned = local_position_fresh ? local_position_.x : last_target_.x;
+    const double current_y_ned = local_position_fresh ? local_position_.y : last_target_.y;
+    const double current_z_ned = local_position_fresh ? local_position_.z : -last_target_.z;
+    const double current_heading = local_position_fresh ? local_position_.heading : last_target_.yaw;
+
+    last_target_ = utils::DDS2manual_handoff(last_target_, current_x_ned, current_y_ned, current_z_ned, current_heading, manual_roll, manual_pitch, manual_yaw, params::handoff_position_offset_m, params::handoff_yaw_offset_rad, dds2manual_handoff_filters_);
+
+    px4_msgs::msg::TrajectorySetpoint6dof setpoint_message{};
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const Eigen::Vector4d quaternion = utils::rpyToQuat(Eigen::Vector3d(last_target_.roll, last_target_.pitch, last_target_.yaw));
+
+    setpoint_message.timestamp = timestamp_us;
+    setpoint_message.position = {static_cast<float>(last_target_.x), static_cast<float>(last_target_.y), static_cast<float>(-last_target_.z)};
+    setpoint_message.velocity = {nan, nan, nan};
+    setpoint_message.acceleration = {nan, nan, nan};
+    setpoint_message.jerk = {nan, nan, nan};
+    setpoint_message.quaternion = {static_cast<float>(quaternion(0)), static_cast<float>(quaternion(1)), static_cast<float>(quaternion(2)), static_cast<float>(quaternion(3))};
+    setpoint_message.angular_velocity = {nan, nan, nan};
+
+    trajectory_publisher_->publish(setpoint_message);
+
+    if (elapsed_sec - handoff_start_time_sec_ < params::handoff_run_time_sec) return; 
+    
+    // Handoff Done -----------------------------------------------------------------
+    px4_msgs::msg::VehicleCommand mode_message{};
+
+    mode_message.timestamp = timestamp_us;
+    mode_message.param1 = 1.0F;
+    mode_message.param2 = 3.0F;
+    mode_message.command = px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE;
+    mode_message.target_system = params::target_system_id;
+    mode_message.target_component = params::target_component_id;
+    mode_message.source_system = params::source_system_id;
+    mode_message.source_component = params::source_component_id;
+    mode_message.confirmation = 0;
+    mode_message.from_external = true;
+
+    vehicle_command_publisher_->publish(mode_message);
+
+    control_mode_ = ControlMode::wait_offboard;
+    has_trajectory_origin_ = false;
+    has_dds_control_start_time_ = false;
+
+    RCLCPP_INFO(this->get_logger(),"Manual handoff complete. POSCTL command sent and offboard setpoints stopped.");
   }
 
-  void beginManualHandoff(double t)
+  void on_tick()
   {
-    if (manual_handoff_active_) return;
+    const auto current_steady_time = std::chrono::steady_clock::now();
+    
+    const double elapsed_sec = std::chrono::duration<double>(current_steady_time - node_start_time_).count();
+    
+    const uint64_t timestamp_us = static_cast<uint64_t>(this->get_clock()->now().nanoseconds() / 1000);
+    
+    const double controller_mode_age_sec = std::chrono::duration<double>(current_steady_time - last_controller_mode_time_).count();
+    const double local_position_age_sec = std::chrono::duration<double>(current_steady_time - last_local_position_time_).count();
+    const double vehicle_status_age_sec = std::chrono::duration<double>(current_steady_time - last_vehicle_status_time_).count();
 
-    manual_handoff_active_ = true;
-    manual_handoff_completed_ = false;
-    manual_handoff_start_time_sec_ = t;
-    handoff_filters_.reset(last_cmd_);
-    RCLCPP_INFO(this->get_logger(), "HB_CMD_SOURCE changed to RC. Starting smooth manual handoff.");
-  }
+    const bool controller_mode_fresh = has_controller_mode_ && controller_mode_age_sec <= params::message_timeout_sec;
+    const bool local_position_fresh  = has_local_position_  &&  local_position_age_sec <= params::message_timeout_sec && local_position_.xy_valid && local_position_.z_valid;
+    const bool vehicle_status_fresh  = has_vehicle_status_  &&  vehicle_status_age_sec <= params::message_timeout_sec;
+    
+    const bool dds_control_enabled = controller_mode_fresh && controller_mode_.hb_cmd_source == px4_msgs::msg::HummingbirdStatus::HB_CMD_SOURCE_DDS;
 
-  void finishManualHandoff(uint64_t timestamp_us)
-  {
-    if (manual_handoff_completed_) return;
+    if (!previous_dds_control_enabled_ && dds_control_enabled) 
+    {
+      dds_control_start_time_sec_ = elapsed_sec;
+      has_dds_control_start_time_ = true;
 
-    publishVehicleCommand(
-      timestamp_us,
-      px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE,
-      1.0F,
-      3.0F);
-
-    startup_state_ = StartupState::WaitBeforeOffboard;
-    manual_handoff_active_ = false;
-    manual_handoff_completed_ = true;
-    RCLCPP_INFO(this->get_logger(), "Manual handoff complete. POSCTL command sent and offboard setpoints stopped.");
-  }
-
-  void publishManualHandoffSetpoint(uint64_t timestamp_us, double t)
-  {
-    const double roll = manualControlFresh() ? manual_control_.roll : 0.0;
-    const double pitch = manualControlFresh() ? manual_control_.pitch : 0.0;
-    const double yaw = manualControlFresh() ? manual_control_.yaw : 0.0;
-
-    const double x = vehicleLocalPositionFresh() ? vehicle_local_position_.x : last_cmd_.x;
-    const double y = vehicleLocalPositionFresh() ? vehicle_local_position_.y : last_cmd_.y;
-    const double z = vehicleLocalPositionFresh() ? vehicle_local_position_.z : -last_cmd_.z;
-    const double heading = vehicleLocalPositionFresh() ? vehicle_local_position_.heading : last_cmd_.yaw;
-
-    const auto cmd = utils::manualHandoffCommand(
-      last_cmd_,
-      x,
-      y,
-      z,
-      heading,
-      roll,
-      pitch,
-      yaw,
-      handoff_position_offset_m_,
-      handoff_yaw_offset_rad_,
-      handoff_filters_);
-
-    last_cmd_ = cmd;
-    publishTrajectorySetpoint6dof(timestamp_us, cmd);
-
-    if ((t - manual_handoff_start_time_sec_) >= handoff_duration_sec_) finishManualHandoff(timestamp_us);
-  }
-
-  void updateStartupSequence(uint64_t timestamp_us, double t)
-  {
-    const bool hb_dds_enabled = hbDdsCommandEnabled();
-
-    if (!previous_hb_dds_enabled_ && hb_dds_enabled) {
-      captureCommandSourceStart(t);
-    }
-
-    if (previous_hb_dds_enabled_ && !hb_dds_enabled && startup_state_ == StartupState::PositionActive) beginManualHandoff(t);
-
-    previous_hb_dds_enabled_ = hb_dds_enabled;
-
-    if (manual_handoff_active_) return;
-
-    if (!hb_dds_enabled) {
-      if (startup_state_ == StartupState::PositionActive) {
-        startup_state_ = StartupState::WaitBeforeOffboard;
-        trajectory_origin_valid_ = false;
-        hb_cmd_source_enable_time_valid_ = false;
+      if (local_position_fresh) 
+      {
+        pos_x = local_position_.x;
+        pos_y = local_position_.y;
+        pos_z = -local_position_.z;
+        trajectory_start_time_sec_ = elapsed_sec;
+        has_trajectory_origin_ = true;
+        RCLCPP_INFO(this->get_logger(),"DDS control enabled. Trajectory origin set to current local position.");
+      } 
+      else 
+      {
+        has_trajectory_origin_ = false;
+        RCLCPP_WARN(this->get_logger(), "DDS control enabled, but vehicle_local_position is not fresh.");
       }
+    }
 
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(), *this->get_clock(), 2000,
-        "Waiting for HB_CMD_SOURCE=1 before sending offboard commands.");
+    if (previous_dds_control_enabled_ && !dds_control_enabled && control_mode_ == ControlMode::path_active)
+    {
+      control_mode_ = ControlMode::DDS2RC_handoff;
+      handoff_start_time_sec_ = elapsed_sec;
+      dds2manual_handoff_filters_.reset(last_target_);
+      RCLCPP_INFO(this->get_logger(),"DDS control changed to RC. Starting smooth manual handoff.");
+    }
+
+    previous_dds_control_enabled_ = dds_control_enabled;
+
+    if (dds_control_enabled || control_mode_ == ControlMode::DDS2RC_handoff) 
+    {
+      px4_msgs::msg::OffboardControlMode message{};
+
+      message.timestamp = timestamp_us;
+      message.position = true;
+      message.velocity = false;
+      message.acceleration = false;
+      message.attitude = false;
+      message.body_rate = false;
+      message.thrust_and_torque = false;
+      message.direct_actuator = false;
+
+      offboard_mode_publisher_->publish(message);
+    }
+
+    if (control_mode_ == ControlMode::DDS2RC_handoff) 
+    {
+      DDS2RC_handoff(timestamp_us, elapsed_sec);
       return;
     }
 
-    if (!vehicleStatusFresh(t)) {
-      if (startup_state_ == StartupState::PositionActive) {
-        startup_state_ = StartupState::WaitForOffboard;
-      }
+    if (!dds_control_enabled) { RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for HB_CMD_SOURCE_DDS."); return; }
 
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(), *this->get_clock(), 2000,
-        "Waiting for fresh vehicle_status before sending position setpoints.");
+    if (!vehicle_status_fresh) 
+    {
+      if (control_mode_ == ControlMode::path_active) control_mode_ = ControlMode::wait_offboard;
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for vehicle_status");
       return;
     }
 
-    if (startup_state_ == StartupState::PositionActive && !readyForPositionSetpoint()) {
-      startup_state_ = offboardReady() ? StartupState::WaitForArm : StartupState::WaitForOffboard;
-      RCLCPP_WARN(this->get_logger(), "Vehicle left ready state. Position setpoints stopped.");
+    const bool offboard_mode_active = vehicle_status_.nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
+
+    const bool vehicle_armed = vehicle_status_.arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+
+    if (control_mode_ == ControlMode::path_active && (!offboard_mode_active || !vehicle_armed))
+    {
+      control_mode_ = offboard_mode_active ? ControlMode::wait_arm : ControlMode::wait_offboard;
+      RCLCPP_WARN(this->get_logger(),"Vehicle left active control state. Position setpoints stopped.");
     }
 
-    switch (startup_state_) {
-      case StartupState::WaitBeforeOffboard:
-        if (t < command_delay_sec_) {
-          return;
-        }
-        startup_state_ = StartupState::WaitForOffboard;
-        [[fallthrough]];
+    switch (control_mode_) 
+    {
+      case ControlMode::wait_offboard:
+        wait_offboard(timestamp_us, elapsed_sec);
+        break;
 
-      case StartupState::WaitForOffboard:
-        if (!offboardReady()) {
-          if (auto_offboard_ && commandIntervalElapsed(t, last_offboard_command_time_sec_)) {
-            publishVehicleCommand(
-              timestamp_us,
-              px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE,
-              1.0F,
-              6.0F);
-            last_offboard_command_time_sec_ = t;
-            RCLCPP_INFO(this->get_logger(), "Offboard mode command sent.");
-          }
-          return;
-        }
+      case ControlMode::wait_arm:
+        wait_arm(timestamp_us, elapsed_sec);
+        break;
 
-        RCLCPP_INFO(this->get_logger(), "Offboard mode confirmed.");
-        startup_state_ = StartupState::WaitForArm;
-        [[fallthrough]];
+      case ControlMode::path_active:
+        path_active(timestamp_us, elapsed_sec);
+        break;
 
-      case StartupState::WaitForArm:
-        if (!armReady()) {
-          if (auto_arm_ && commandIntervalElapsed(t, last_arm_command_time_sec_)) {
-            publishVehicleCommand(
-              timestamp_us,
-              px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM,
-              1.0F);
-            last_arm_command_time_sec_ = t;
-            RCLCPP_INFO(this->get_logger(), "Arm command sent.");
-          }
-          return;
-        }
+      case ControlMode::DDS2RC_handoff:
+        break;
 
-        if (!trajectory_origin_valid_) {
-          if (!localPositionReadyForTrajectoryOrigin()) {
-            RCLCPP_WARN_THROTTLE(
-              this->get_logger(), *this->get_clock(), 2000,
-              "Waiting for fresh vehicle_local_position before capturing trajectory origin.");
-            return;
-          }
-
-          captureTrajectoryOrigin(hb_cmd_source_enable_time_valid_ ? hb_cmd_source_enable_time_sec_ : t);
-        }
-
-        startup_state_ = StartupState::PositionActive;
-        RCLCPP_INFO(this->get_logger(), "Vehicle armed. Position setpoint publishing started.");
-        return;
-
-      case StartupState::PositionActive:
-        return;
+      case ControlMode::RC2DDS_handoff:
+        break;
     }
   }
 
-  void onTick()
-  {
-    const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
-    const uint64_t timestamp_us = timestampMicros();
+  rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_mode_publisher_;
+  rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint6dof>::SharedPtr trajectory_publisher_;
+  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
 
-    const bool publish_offboard = hbDdsCommandEnabled() || manual_handoff_active_;
+  rclcpp::Subscription<px4_msgs::msg::HummingbirdStatus>::SharedPtr hummingbird_status_subscription_;
+  rclcpp::Subscription<px4_msgs::msg::ManualControlSetpoint>::SharedPtr manual_control_subscription_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_subscription_;
 
-    if (publish_offboard) publishOffboardControlMode(timestamp_us);
+  rclcpp::TimerBase::SharedPtr control_timer_;
 
-    updateStartupSequence(timestamp_us, t);
+  std::chrono::steady_clock::time_point node_start_time_;
+  std::chrono::steady_clock::time_point last_controller_mode_time_;
+  std::chrono::steady_clock::time_point last_RC_cmd_time_;
+  std::chrono::steady_clock::time_point last_local_position_time_;
+  std::chrono::steady_clock::time_point last_vehicle_status_time_;
 
-    if (manual_handoff_active_) {
-      publishManualHandoffSetpoint(timestamp_us, t);
-      return;
-    }
-
-    if (startup_state_ != StartupState::PositionActive || !readyForPositionSetpoint()) return;
-
-    if (!trajectory_origin_valid_) return;
-
-    const auto relative_cmd = pathCommand(t - trajectory_start_time_sec_);
-    const auto cmd = applyTrajectoryOrigin(relative_cmd);
-    last_cmd_ = cmd;
-    publishTrajectorySetpoint6dof(timestamp_us, cmd);
-  }
-
-  rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_pub_;
-  rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint6dof>::SharedPtr trajectory6dof_pub_;
-  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_pub_;
-  rclcpp::Subscription<px4_msgs::msg::HummingbirdStatus>::SharedPtr hummingbird_status_sub_;
-  rclcpp::Subscription<px4_msgs::msg::ManualControlSetpoint>::SharedPtr manual_control_sub_;
-  rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
-  rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_sub_;
-  rclcpp::TimerBase::SharedPtr timer_;
-  std::chrono::steady_clock::time_point t0_;
-  std::chrono::steady_clock::time_point last_status_time_;
-  std::chrono::steady_clock::time_point last_hummingbird_status_time_;
-  std::chrono::steady_clock::time_point last_manual_control_time_;
-  std::chrono::steady_clock::time_point last_vehicle_local_position_time_;
-
-  px4_msgs::msg::HummingbirdStatus hummingbird_status_{};
-  px4_msgs::msg::ManualControlSetpoint manual_control_{};
-  px4_msgs::msg::VehicleLocalPosition vehicle_local_position_{};
+  px4_msgs::msg::HummingbirdStatus controller_mode_{};
+  px4_msgs::msg::ManualControlSetpoint RC_cmd{};
+  px4_msgs::msg::VehicleLocalPosition local_position_{};
   px4_msgs::msg::VehicleStatus vehicle_status_{};
-  utils::TargetCMD last_cmd_{};
-  utils::ManualHandoffFilters handoff_filters_{};
-  std::string path_name_;
-  std::string hummingbird_status_topic_;
-  std::string manual_control_topic_;
-  std::string vehicle_local_position_topic_;
-  std::string vehicle_status_topic_;
+
+  utils::TargetCMD last_target_{};
+  utils::HandoffFilters dds2manual_handoff_filters_{};
+
+  std::string trajectory_name_;
+
   bool auto_offboard_{false};
   bool auto_arm_{false};
-  bool require_vehicle_status_{true};
-  bool require_vehicle_local_position_{true};
-  bool require_hb_cmd_source_dds_{true};
-  bool hummingbird_status_received_{false};
-  bool manual_control_received_{false};
-  bool vehicle_local_position_received_{false};
-  bool vehicle_status_received_{false};
-  bool previous_hb_dds_enabled_{false};
-  bool manual_handoff_active_{false};
-  bool manual_handoff_completed_{false};
-  bool trajectory_origin_valid_{false};
-  bool hb_cmd_source_enable_time_valid_{false};
-  StartupState startup_state_{StartupState::WaitBeforeOffboard};
-  double command_delay_sec_{2.0};
-  double command_repeat_sec_{1.0};
-  double status_timeout_sec_{1.0};
-  double handoff_duration_sec_{2.0};
-  double handoff_position_offset_m_{0.6};
-  double handoff_yaw_offset_rad_{0.35};
-  double last_offboard_command_time_sec_{-std::numeric_limits<double>::infinity()};
-  double last_arm_command_time_sec_{-std::numeric_limits<double>::infinity()};
+
+  bool has_controller_mode_{false};
+  bool has_RC_cmd_{false};
+  bool has_local_position_{false};
+  bool has_vehicle_status_{false};
+
+  bool previous_dds_control_enabled_{false};
+  bool has_trajectory_origin_{false};
+  bool has_dds_control_start_time_{false};
+
+  ControlMode control_mode_{ControlMode::wait_offboard};
+
+  double last_offboard_request_time_sec_{-std::numeric_limits<double>::infinity()};
+  double last_arm_request_time_sec_{-std::numeric_limits<double>::infinity()};
+
   double trajectory_start_time_sec_{0.0};
-  double hb_cmd_source_enable_time_sec_{0.0};
-  double trajectory_origin_x_ned_{0.0};
-  double trajectory_origin_y_ned_{0.0};
-  double trajectory_origin_altitude_up_{0.0};
-  double manual_handoff_start_time_sec_{0.0};
-  int target_system_{1};
-  int target_component_{1};
-  int source_system_{1};
-  int source_component_{1};
+  double dds_control_start_time_sec_{0.0};
+  double handoff_start_time_sec_{0.0};
+
+  double pos_x{0.0};
+  double pos_y{0.0};
+  double pos_z{0.0};
 };
 
-int main(int argc, char** argv)
+
+int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<Px4PositionCmd>());
+  rclcpp::spin(std::make_shared<Px4PositionCommand>());
   rclcpp::shutdown();
+
   return 0;
 }

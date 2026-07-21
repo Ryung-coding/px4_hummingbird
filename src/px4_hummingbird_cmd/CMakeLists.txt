@@ -28,7 +28,12 @@ ament_target_dependencies(px4_position_cmd
   px4_msgs
 )
 
+target_include_directories(px4_servo_to_gz PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 target_link_libraries(px4_servo_to_gz
+  Eigen3::Eigen
   gz-msgs10::gz-msgs10
   gz-transport13::gz-transport13
 )

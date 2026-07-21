@@ -2,8 +2,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <limits>
+#include <cstddef>
+#include <functional>
+#include <memory>
 #include <string>
+#include <thread>
 
 #include <gz/msgs/double.pb.h>
 #include <gz/transport/Node.hh>
@@ -12,120 +15,146 @@
 
 #include <px4_msgs/msg/actuator_servos.hpp>
 
-namespace
-{
-constexpr int kNumTiltServos = 8;
-constexpr double kDefaultThetaLimit = M_PI;
-constexpr double kDefaultPhiLimit = M_PI / 6.0;
-// HummingBird DDS convention: control[0..3] = theta1..theta4, control[4..7] = phi1..phi4.
-constexpr std::array<const char*, kNumTiltServos> kServoTopics = {
-  "joint_theta1", "joint_theta2", "joint_theta3", "joint_theta4",
-  "joint_phi1", "joint_phi2", "joint_phi3", "joint_phi4"
-};
-}
+#include "params.hpp"
+#include "utils.hpp"
 
 class Px4ServoToGz : public rclcpp::Node
 {
 public:
   Px4ServoToGz()
-  : rclcpp::Node("px4_servo_to_gz")
+  : Node("px4_servo_to_gz")
   {
-    model_name_ = this->declare_parameter<std::string>("model_name", "hummingbird_0");
-    theta_limit_rad_ = this->declare_parameter<double>("theta_limit_rad", kDefaultThetaLimit);
-    phi_limit_rad_ = this->declare_parameter<double>("phi_limit_rad", kDefaultPhiLimit);
-
-    for (int i = 0; i < kNumTiltServos; ++i) {
-      const std::string topic = "/model/" + model_name_ + "/" + kServoTopics[i];
+    for (std::size_t i = 0; i < params::SERVO_TOPICS.size(); ++i)
+    {
+      const std::string topic = "/model/hummingbird_0/" + std::string(params::SERVO_TOPICS[i]);
       servo_pubs_[i] = gz_node_.Advertise<gz::msgs::Double>(topic);
 
-      if (!servo_pubs_[i].Valid()) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to advertise Gazebo topic: %s", topic.c_str());
-      }
+      if (!servo_pubs_[i].Valid()) RCLCPP_ERROR(this->get_logger(), "Failed to advertise Gazebo topic: %s", topic.c_str());
+
+      servo_lpf_[i] = utils::LPF(params::SERVO_RETURN_TIME_SEC);
+      servo_lpf_[i].reset(0.0);
+
+      if (!servo_pubs_[i].Valid()) continue;
+
+      gz::msgs::Double command;
+      command.set_data(0.0);
+      servo_pubs_[i].Publish(command);
     }
 
     last_actuator_msg_time_ = this->now();
-    publish_zero_timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(50),
-      std::bind(&Px4ServoToGz::publishZeroIfInactive, this));
+    return_start_time_ = this->now();
 
-    actuator_servos_sub_ = this->create_subscription<px4_msgs::msg::ActuatorServos>(
-      "/fmu/out/actuator_servos",
-      rclcpp::SensorDataQoS(),
-      std::bind(&Px4ServoToGz::actuatorServosCallback, this, std::placeholders::_1));
+    actuator_servos_sub_ = this->create_subscription<px4_msgs::msg::ActuatorServos>("/fmu/out/actuator_servos", rclcpp::SensorDataQoS(), std::bind(&Px4ServoToGz::actuatorServosCallback, this, std::placeholders::_1));
 
-    publishZeroCommands();
+    publish_timer_ = this->create_wall_timer(std::chrono::microseconds(params::SERVO_PERIOD_US), [this]()
+    {
+      const rclcpp::Time now = this->now();
+      const double inactive_time = (now - last_actuator_msg_time_).seconds();
 
-    RCLCPP_INFO(
-      this->get_logger(),
-      "PX4 actuator_servos -> Gazebo HummingBird joint bridge started for model=%s",
-      model_name_.c_str());
+      if (inactive_time < params::SERVO_TIMEOUT_SEC) { returning_to_zero_ = false; return; }
+      if (!returning_to_zero_)                       { returning_to_zero_ = true; return_start_time_ = now;}
+
+      const double return_elapsed = (now - return_start_time_).seconds();
+      const bool return_finished = return_elapsed >= params::SERVO_RETURN_TIME_SEC;
+
+      for (std::size_t i = 0; i < params::SERVO_TOPICS.size(); ++i)
+      {
+        double command = servo_lpf_[i].update(0.0);
+
+        if (return_finished)
+        {
+          command = 0.0;
+          servo_lpf_[i].reset(0.0);
+        }
+
+        if (!servo_pubs_[i].Valid()) continue;
+
+        gz::msgs::Double servo_msg;
+        servo_msg.set_data(command);
+        servo_pubs_[i].Publish(servo_msg);
+      }
+    });
+
+    RCLCPP_INFO(this->get_logger(), "PX4 actuator_servos -> Gazebo bridge started: model=hummingbird_0, rate=%d Hz, return=%.2f sec", params::RATE_HZ, params::SERVO_RETURN_TIME_SEC);
+  }
+
+  ~Px4ServoToGz() override
+  {
+    if (publish_timer_) publish_timer_->cancel();
+
+    for (int repeat = 0; repeat < 5; ++repeat)
+    {
+      for (std::size_t i = 0; i < params::SERVO_TOPICS.size(); ++i)
+      {
+        if (!servo_pubs_[i].Valid()) continue;
+
+        gz::msgs::Double command;
+        command.set_data(0.0);
+        servo_pubs_[i].Publish(command);
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Final zero servo commands published");
   }
 
 private:
-  static double clampNormalized(float value)
-  {
-    if (!std::isfinite(value)) {
-      return 0.0;
-    }
-
-    return std::clamp(static_cast<double>(value), -1.0, 1.0);
-  }
-
-  void publishZeroCommands()
-  {
-    for (int i = 0; i < kNumTiltServos; ++i) {
-      publishServo(i, 0.0);
-    }
-  }
-
-  void publishZeroIfInactive()
-  {
-    if ((this->now() - last_actuator_msg_time_).seconds() < 0.2) {
-      return;
-    }
-
-    publishZeroCommands();
-  }
-
-  void publishServo(int index, double angle_rad)
-  {
-    if (!std::isfinite(angle_rad) || !servo_pubs_[index].Valid()) {
-      return;
-    }
-
-    gz::msgs::Double msg;
-    msg.set_data(angle_rad);
-    servo_pubs_[index].Publish(msg);
-  }
-
   void actuatorServosCallback(const px4_msgs::msg::ActuatorServos::SharedPtr msg)
   {
     last_actuator_msg_time_ = this->now();
+    returning_to_zero_ = false;
 
-    for (int i = 0; i < 4; ++i) {
-      const double theta = clampNormalized(msg->control[i]) * theta_limit_rad_;
-      const double phi = clampNormalized(msg->control[i + 4]) * phi_limit_rad_;
+    for (std::size_t i = 0; i < params::SERVO_TOPICS.size() / 2; ++i)
+    {
+      const std::size_t phi_index = i + params::SERVO_TOPICS.size() / 2;
 
-      publishServo(i, theta);
-      publishServo(i + 4, phi);
+      const double theta_normalized = std::isfinite(msg->control[i]) ? std::clamp(static_cast<double>(msg->control[i]), -1.0, 1.0) : 0.0;
+      const double phi_normalized = std::isfinite(msg->control[phi_index]) ? std::clamp(static_cast<double>(msg->control[phi_index]), -1.0, 1.0) : 0.0;
+
+      const double theta_command = theta_normalized * params::THETA_LIMIT_RAD;
+      const double phi_command = phi_normalized * params::PHI_LIMIT_RAD;
+
+      servo_lpf_[i].reset(theta_command);
+      servo_lpf_[phi_index].reset(phi_command);
+
+      if (servo_pubs_[i].Valid())
+      {
+        gz::msgs::Double theta_msg;
+        theta_msg.set_data(theta_command);
+        servo_pubs_[i].Publish(theta_msg);
+      }
+
+      if (servo_pubs_[phi_index].Valid())
+      {
+        gz::msgs::Double phi_msg;
+        phi_msg.set_data(phi_command);
+        servo_pubs_[phi_index].Publish(phi_msg);
+      }
     }
   }
 
   gz::transport::Node gz_node_;
-  std::array<gz::transport::Node::Publisher, kNumTiltServos> servo_pubs_;
-  rclcpp::Subscription<px4_msgs::msg::ActuatorServos>::SharedPtr actuator_servos_sub_;
-  rclcpp::TimerBase::SharedPtr publish_zero_timer_;
 
-  std::string model_name_;
+  std::array<gz::transport::Node::Publisher, params::SERVO_TOPICS.size()> servo_pubs_;
+  std::array<utils::LPF, params::SERVO_TOPICS.size()> servo_lpf_;
+
+  rclcpp::Subscription<px4_msgs::msg::ActuatorServos>::SharedPtr actuator_servos_sub_;
+  rclcpp::TimerBase::SharedPtr publish_timer_;
+
   rclcpp::Time last_actuator_msg_time_;
-  double theta_limit_rad_{kDefaultThetaLimit};
-  double phi_limit_rad_{kDefaultPhiLimit};
+  rclcpp::Time return_start_time_;
+
+  bool returning_to_zero_ = false;
 };
 
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<Px4ServoToGz>());
-  rclcpp::shutdown();
+  auto node = std::make_shared<Px4ServoToGz>();
+  rclcpp::spin(node);
+  node.reset();
+  if (rclcpp::ok()) rclcpp::shutdown();
+  
   return 0;
 }
