@@ -19,7 +19,7 @@ def generate_launch_description():
         DeclareLaunchArgument("auto_offboard", default_value="false"),
         DeclareLaunchArgument("auto_arm", default_value="false"),
         DeclareLaunchArgument("enable_gz_servo", default_value="true"),
-        DeclareLaunchArgument("enable_dynamixel_servo", default_value="true"),
+        DeclareLaunchArgument("enable_dynamixel_servo", default_value="false"),
         DeclareLaunchArgument("model_name", default_value="hummingbird_0"),
 
         Node(
