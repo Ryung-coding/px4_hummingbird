@@ -56,25 +56,6 @@ struct TargetCMD {
   double yaw = 0.0;
 };
 
-struct HandoffFilters {
-  LPF x{params::handoff_run_time_sec};
-  LPF y{params::handoff_run_time_sec};
-  LPF z{params::handoff_run_time_sec};
-  LPF roll{params::handoff_run_time_sec};
-  LPF pitch{params::handoff_run_time_sec};
-  LPF yaw{params::handoff_run_time_sec};
-
-  void reset(const TargetCMD& cmd)
-  {
-    x.reset(cmd.x);
-    y.reset(cmd.y);
-    z.reset(cmd.z);
-    roll.reset(cmd.roll);
-    pitch.reset(cmd.pitch);
-    yaw.reset(cmd.yaw);
-  }
-};
-
 // Math utils ========================================================
 inline Eigen::Vector4d rpyToQuat(const Eigen::Vector3d& rpy)
 {
@@ -91,33 +72,6 @@ inline Eigen::Vector4d rpyToQuat(const Eigen::Vector3d& rpy)
        cr * sp * cy + sr * cp * sy,
        cr * cp * sy - sr * sp * cy;
   return q.normalized();
-}
-
-inline double unwrapNear(double target, double reference)
-{
-  while (target - reference > M_PI) target -= 2.0 * M_PI;
-  while (target - reference < -M_PI) target += 2.0 * M_PI;
-  return target;
-}
-
-inline TargetCMD DDS2manual_handoff(const TargetCMD& last_cmd, double vehicle_x_ned, double vehicle_y_ned, double vehicle_z_ned, double vehicle_yaw_ned, double rc_roll, double rc_pitch, double rc_yaw, double position_offset_max, double yaw_offset_max, HandoffFilters& filters)
-{
-  TargetCMD target;
-  target.x = vehicle_x_ned + std::clamp(rc_pitch, -1.0, 1.0) * position_offset_max;
-  target.y = vehicle_y_ned + std::clamp(rc_roll, -1.0, 1.0) * position_offset_max;
-  target.z = -vehicle_z_ned;
-  target.roll = 0.0;
-  target.pitch = 0.0;
-  target.yaw = unwrapNear(vehicle_yaw_ned + std::clamp(rc_yaw, -1.0, 1.0) * yaw_offset_max, last_cmd.yaw);
-
-  TargetCMD cmd;
-  cmd.x = filters.x.update(target.x);
-  cmd.y = filters.y.update(target.y);
-  cmd.z = filters.z.update(target.z);
-  cmd.roll = filters.roll.update(target.roll);
-  cmd.pitch = filters.pitch.update(target.pitch);
-  cmd.yaw = filters.yaw.update(target.yaw);
-  return cmd;
 }
 
 // Path utils =========================================================
@@ -170,7 +124,7 @@ inline TargetCMD attitudeTuningPath(double t)
   cmd.roll = 0.0;
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
-  cmd.pitch = params::THETA_MAX * std::sin(w * axis_t);
+  cmd.pitch = params::PITCH_MAX * std::sin(w * axis_t);
 
   return cmd;
 }
@@ -255,10 +209,10 @@ inline TargetCMD agilePath(double t)
 
   cmd.x = params::RADIUS * std::sin(p);
   cmd.y = params::RADIUS * std::sin(p) * std::cos(p);
-  cmd.z = params::RADIUS * std::sin(params::THETA_MAX) * std::sin(p);
+  cmd.z = params::RADIUS * std::sin(params::PITCH_MAX) * std::sin(p);
 
   cmd.roll = params::ROLL_MAX * std::sin(p);
-  cmd.pitch = params::THETA_MAX * std::sin(p + 0.5 * M_PI);
+  cmd.pitch = params::PITCH_MAX * std::sin(p + 0.5 * M_PI);
   cmd.yaw = params::YAW_MAX * std::sin(p);
 
   return cmd;

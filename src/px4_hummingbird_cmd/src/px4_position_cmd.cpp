@@ -9,7 +9,6 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <px4_msgs/msg/hummingbird_status.hpp>
-#include <px4_msgs/msg/manual_control_setpoint.hpp>
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/trajectory_setpoint6dof.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
@@ -39,7 +38,6 @@ public:
 
     // For px4_multirotor_viewer.py
     hummingbird_status_subscription_ = this->create_subscription<px4_msgs::msg::HummingbirdStatus>("/fmu/out/hummingbird_status", qos, std::bind(&Px4PositionCommand::controller_mode_callback, this, std::placeholders::_1));
-    manual_control_subscription_     = this->create_subscription<px4_msgs::msg::ManualControlSetpoint>("/fmu/out/manual_control_setpoint", qos, std::bind(&Px4PositionCommand::RC_callback, this, std::placeholders::_1));
     local_position_subscription_     = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>("/fmu/out/vehicle_local_position_v1", qos, std::bind(&Px4PositionCommand::local_position_callback, this, std::placeholders::_1));
     vehicle_status_subscription_     = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status_v4", qos, std::bind(&Px4PositionCommand::vehicle_status_callback, this, std::placeholders::_1));
 
@@ -49,7 +47,6 @@ public:
     // Initialize timestamps
     node_start_time_ = std::chrono::steady_clock::now();
     last_controller_mode_time_ = node_start_time_;
-    last_RC_cmd_time_ = node_start_time_;
     last_local_position_time_ = node_start_time_;
     last_vehicle_status_time_ = node_start_time_;
 
@@ -62,9 +59,7 @@ private:
   {
     wait_offboard,
     wait_arm,
-    path_active,
-    DDS2RC_handoff,
-    RC2DDS_handoff
+    path_active
   };
 
   // DDS= or RC= (hb_cmd_source)
@@ -73,14 +68,6 @@ private:
     controller_mode_ = *message;
     has_controller_mode_ = true;
     last_controller_mode_time_ = std::chrono::steady_clock::now();
-  }
-
-  // RC cmd
-  void RC_callback(const px4_msgs::msg::ManualControlSetpoint::SharedPtr message)
-  {
-    RC_cmd = *message;
-    has_RC_cmd_ = true;
-    last_RC_cmd_time_ = std::chrono::steady_clock::now();
   }
 
   // Local Position (x,y,z,heading)
@@ -204,8 +191,6 @@ private:
     target.y = pos_y + path_target.y;
     target.z = pos_z + path_target.z;
 
-    last_target_ = target;
-
 
     // Publish trajectory setpoint
     px4_msgs::msg::TrajectorySetpoint6dof message{};
@@ -222,66 +207,6 @@ private:
     message.angular_velocity = {nan, nan, nan};
 
     trajectory_publisher_->publish(message);
-  }
-
-  void DDS2RC_handoff(uint64_t timestamp_us, double elapsed_sec)
-  {
-    const auto current_time = std::chrono::steady_clock::now();
-    const double manual_control_age_sec = std::chrono::duration<double>(current_time - last_RC_cmd_time_).count();
-    const double local_position_age_sec = std::chrono::duration<double>(current_time - last_local_position_time_).count();
-
-    const bool manual_control_fresh = has_RC_cmd_ && RC_cmd.valid && manual_control_age_sec <= params::message_timeout_sec;
-    const bool local_position_fresh = has_local_position_ && local_position_.xy_valid && local_position_.z_valid && local_position_age_sec <= params::message_timeout_sec;
-
-    const double manual_roll = manual_control_fresh ? RC_cmd.roll : 0.0;
-    const double manual_pitch = manual_control_fresh ? RC_cmd.pitch : 0.0;
-    const double manual_yaw = manual_control_fresh ? RC_cmd.yaw : 0.0;
-
-    const double current_x_ned = local_position_fresh ? local_position_.x : last_target_.x;
-    const double current_y_ned = local_position_fresh ? local_position_.y : last_target_.y;
-    const double current_z_ned = local_position_fresh ? local_position_.z : -last_target_.z;
-    const double current_heading = local_position_fresh ? local_position_.heading : last_target_.yaw;
-
-    last_target_ = utils::DDS2manual_handoff(last_target_, current_x_ned, current_y_ned, current_z_ned, current_heading, manual_roll, manual_pitch, manual_yaw, params::handoff_position_offset_m, params::handoff_yaw_offset_rad, dds2manual_handoff_filters_);
-
-    px4_msgs::msg::TrajectorySetpoint6dof setpoint_message{};
-
-    const float nan = std::numeric_limits<float>::quiet_NaN();
-    const Eigen::Vector4d quaternion = utils::rpyToQuat(Eigen::Vector3d(last_target_.roll, last_target_.pitch, last_target_.yaw));
-
-    setpoint_message.timestamp = timestamp_us;
-    setpoint_message.position = {static_cast<float>(last_target_.x), static_cast<float>(last_target_.y), static_cast<float>(-last_target_.z)};
-    setpoint_message.velocity = {nan, nan, nan};
-    setpoint_message.acceleration = {nan, nan, nan};
-    setpoint_message.jerk = {nan, nan, nan};
-    setpoint_message.quaternion = {static_cast<float>(quaternion(0)), static_cast<float>(quaternion(1)), static_cast<float>(quaternion(2)), static_cast<float>(quaternion(3))};
-    setpoint_message.angular_velocity = {nan, nan, nan};
-
-    trajectory_publisher_->publish(setpoint_message);
-
-    if (elapsed_sec - handoff_start_time_sec_ < params::handoff_run_time_sec) return; 
-    
-    // Handoff Done -----------------------------------------------------------------
-    px4_msgs::msg::VehicleCommand mode_message{};
-
-    mode_message.timestamp = timestamp_us;
-    mode_message.param1 = 1.0F;
-    mode_message.param2 = 3.0F;
-    mode_message.command = px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE;
-    mode_message.target_system = params::target_system_id;
-    mode_message.target_component = params::target_component_id;
-    mode_message.source_system = params::source_system_id;
-    mode_message.source_component = params::source_component_id;
-    mode_message.confirmation = 0;
-    mode_message.from_external = true;
-
-    vehicle_command_publisher_->publish(mode_message);
-
-    control_mode_ = ControlMode::wait_offboard;
-    has_trajectory_origin_ = false;
-    has_dds_control_start_time_ = false;
-
-    RCLCPP_INFO(this->get_logger(),"Manual handoff complete. POSCTL command sent and offboard setpoints stopped.");
   }
 
   void on_tick()
@@ -323,17 +248,9 @@ private:
       }
     }
 
-    if (previous_dds_control_enabled_ && !dds_control_enabled && control_mode_ == ControlMode::path_active)
-    {
-      control_mode_ = ControlMode::DDS2RC_handoff;
-      handoff_start_time_sec_ = elapsed_sec;
-      dds2manual_handoff_filters_.reset(last_target_);
-      RCLCPP_INFO(this->get_logger(),"DDS control changed to RC. Starting smooth manual handoff.");
-    }
-
     previous_dds_control_enabled_ = dds_control_enabled;
 
-    if (dds_control_enabled || control_mode_ == ControlMode::DDS2RC_handoff) 
+    if (dds_control_enabled) 
     {
       px4_msgs::msg::OffboardControlMode message{};
 
@@ -347,12 +264,6 @@ private:
       message.direct_actuator = false;
 
       offboard_mode_publisher_->publish(message);
-    }
-
-    if (control_mode_ == ControlMode::DDS2RC_handoff) 
-    {
-      DDS2RC_handoff(timestamp_us, elapsed_sec);
-      return;
     }
 
     if (!dds_control_enabled) { RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for HB_CMD_SOURCE_DDS."); return; }
@@ -388,11 +299,6 @@ private:
         path_active(timestamp_us, elapsed_sec);
         break;
 
-      case ControlMode::DDS2RC_handoff:
-        break;
-
-      case ControlMode::RC2DDS_handoff:
-        break;
     }
   }
 
@@ -401,7 +307,6 @@ private:
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
 
   rclcpp::Subscription<px4_msgs::msg::HummingbirdStatus>::SharedPtr hummingbird_status_subscription_;
-  rclcpp::Subscription<px4_msgs::msg::ManualControlSetpoint>::SharedPtr manual_control_subscription_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
   rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_subscription_;
 
@@ -409,17 +314,13 @@ private:
 
   std::chrono::steady_clock::time_point node_start_time_;
   std::chrono::steady_clock::time_point last_controller_mode_time_;
-  std::chrono::steady_clock::time_point last_RC_cmd_time_;
   std::chrono::steady_clock::time_point last_local_position_time_;
   std::chrono::steady_clock::time_point last_vehicle_status_time_;
 
   px4_msgs::msg::HummingbirdStatus controller_mode_{};
-  px4_msgs::msg::ManualControlSetpoint RC_cmd{};
   px4_msgs::msg::VehicleLocalPosition local_position_{};
   px4_msgs::msg::VehicleStatus vehicle_status_{};
 
-  utils::TargetCMD last_target_{};
-  utils::HandoffFilters dds2manual_handoff_filters_{};
 
   std::string trajectory_name_;
 
@@ -427,7 +328,6 @@ private:
   bool auto_arm_{false};
 
   bool has_controller_mode_{false};
-  bool has_RC_cmd_{false};
   bool has_local_position_{false};
   bool has_vehicle_status_{false};
 
@@ -442,7 +342,6 @@ private:
 
   double trajectory_start_time_sec_{0.0};
   double dds_control_start_time_sec_{0.0};
-  double handoff_start_time_sec_{0.0};
 
   double pos_x{0.0};
   double pos_y{0.0};
