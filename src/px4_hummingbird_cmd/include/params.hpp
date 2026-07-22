@@ -34,7 +34,7 @@ static constexpr double PITCH_MAX = 60.0 * M_PI / 180.0;
 static constexpr double YAW_MAX = 60.0 * M_PI / 180.0;
 
 // Common servo parameters -----------------------------------------------
-static constexpr double THETA_LIMIT_RAD = M_PI / 2.0;
+static constexpr double THETA_LIMIT_RAD = M_PI;
 static constexpr double PHI_LIMIT_RAD = M_PI / 6.0;
 
 static constexpr double SERVO_TIMEOUT_SEC = 0.2;

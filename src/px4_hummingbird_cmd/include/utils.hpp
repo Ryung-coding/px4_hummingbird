@@ -167,10 +167,9 @@ inline TargetCMD attitudeTuningPath(double t)
   cmd.x = 0.0;
   cmd.y = 0.0;
   cmd.z = 0.0;
-  cmd.roll = 0.0;
-  cmd.pitch = 0.0;
-  cmd.yaw = 0.0;
+  cmd.roll = params::ROLL_MAX * std::sin(w * axis_t);
   cmd.pitch = params::PITCH_MAX * std::sin(w * axis_t);
+  cmd.yaw = 0.0;
 
   return cmd;
 }
