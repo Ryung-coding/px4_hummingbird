@@ -111,6 +111,8 @@ class Px4ViewerNode(Node):
         self.buf_motor = Ring(MAX_SAMPLES, 5)
         self.buf_theta = Ring(MAX_SAMPLES, 5)
         self.buf_phi = Ring(MAX_SAMPLES, 5)
+        self.buf_theta_mea = Ring(MAX_SAMPLES, 5)
+        self.buf_phi_mea = Ring(MAX_SAMPLES, 5)
         self.buf_thrust_body = Ring(MAX_SAMPLES, 4)
 
         qos = QoSProfile(
@@ -128,6 +130,7 @@ class Px4ViewerNode(Node):
         self.create_subscription(VehicleTorqueSetpoint, "/fmu/out/vehicle_torque_setpoint", self._cb_torque, qos)
         self.create_subscription(ActuatorMotors, "/fmu/out/actuator_motors", self._cb_motors, qos)
         self.create_subscription(ActuatorServos, "/fmu/out/actuator_servos", self._cb_servos, qos)
+        self.create_subscription(ActuatorServos, "/dynamixel_tilt_mea", self._cb_dynamixel_tilt_mea, qos)
         self.create_subscription(HummingbirdStatus, "/fmu/out/hummingbird_status", self._cb_status, qos)
 
     def _t(self):
@@ -205,6 +208,35 @@ class Px4ViewerNode(Node):
         with self.lock:
             self.buf_theta.push([t, theta[0], theta[1], theta[2], theta[3]])
             self.buf_phi.push([t, phi[0], phi[1], phi[2], phi[3]])
+
+    def _cb_dynamixel_tilt_mea(self, msg):
+        t = self._t()
+
+        # /dynamixel_tilt_mea mapping:
+        # control[0:2] -> theta1, theta2 [rad]
+        # control[2:6] -> phi1, phi2, phi3, phi4 [rad]
+        # The mechanism has only two measured theta axes, so duplicate them:
+        # theta3 = theta1, theta4 = theta2.
+        theta12 = np.array([
+            0.0 if not math.isfinite(float(msg.control[i])) else float(msg.control[i])
+            for i in range(2)
+        ], dtype=np.float64) * RAD2DEG
+
+        phi = np.array([
+            0.0 if not math.isfinite(float(msg.control[i])) else float(msg.control[i])
+            for i in range(2, 6)
+        ], dtype=np.float64) * RAD2DEG
+
+        theta = np.array([
+            theta12[0],
+            theta12[1],
+            theta12[0],
+            theta12[1],
+        ], dtype=np.float64)
+
+        with self.lock:
+            self.buf_theta_mea.push([t, theta[0], theta[1], theta[2], theta[3]])
+            self.buf_phi_mea.push([t, phi[0], phi[1], phi[2], phi[3]])
 
     def _cb_status(self, msg):
         with self.lock:
@@ -309,11 +341,13 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self.act_plots.append(p)
         for i, color in enumerate(C4):
             p = _mkplot(self.act_glw, 1, i, f"theta{i + 1}", "theta [deg]")
-            self.cv[f"theta{i}"] = p.plot(pen=_pen(color), name=f"theta{i + 1}")
+            self.cv[f"theta{i}"] = p.plot(pen=_pen(color), name=f"theta{i + 1} cmd")
+            self.cv[f"theta_mea{i}"] = _front(p.plot(pen=_cmd_pen(), name=f"theta{i + 1} mea"))
             self.act_plots.append(p)
         for i, color in enumerate(C4):
             p = _mkplot(self.act_glw, 2, i, f"phi{i + 1}", "phi [deg]")
-            self.cv[f"phi{i}"] = p.plot(pen=_pen(color), name=f"phi{i + 1}")
+            self.cv[f"phi{i}"] = p.plot(pen=_pen(color), name=f"phi{i + 1} cmd")
+            self.cv[f"phi_mea{i}"] = _front(p.plot(pen=_cmd_pen(), name=f"phi{i + 1} mea"))
             self.act_plots.append(p)
 
         p_all = _mkplot(self.act_glw, 3, 0, "f1-f4", "force [N]")
@@ -323,12 +357,20 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         p_theta = _mkplot(self.act_glw, 3, 1, "theta1-theta4", "theta [deg]")
         for i, color in enumerate(C4):
-            self.cv[f"theta_all{i}"] = p_theta.plot(pen=_pen(color), name=f"theta{i + 1}")
+            self.cv[f"theta_all{i}"] = p_theta.plot(pen=_pen(color), name=f"theta{i + 1} cmd")
+            self.cv[f"theta_mea_all{i}"] = p_theta.plot(
+                pen=pg.mkPen(color=color, width=2, style=QtCore.Qt.DashLine),
+                name=f"theta{i + 1} mea",
+            )
         self.act_plots.append(p_theta)
 
         p_phi = _mkplot(self.act_glw, 3, 2, "phi1-phi4", "phi [deg]")
         for i, color in enumerate(C4):
-            self.cv[f"phi_all{i}"] = p_phi.plot(pen=_pen(color), name=f"phi{i + 1}")
+            self.cv[f"phi_all{i}"] = p_phi.plot(pen=_pen(color), name=f"phi{i + 1} cmd")
+            self.cv[f"phi_mea_all{i}"] = p_phi.plot(
+                pen=pg.mkPen(color=color, width=2, style=QtCore.Qt.DashLine),
+                name=f"phi{i + 1} mea",
+            )
         self.act_plots.append(p_phi)
 
         p_tb = _mkplot(self.act_glw, 3, 3, "thrust_body", "norm")
@@ -380,6 +422,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
                 "motor": nd.buf_motor.get(),
                 "theta": nd.buf_theta.get(),
                 "phi": nd.buf_phi.get(),
+                "theta_mea": nd.buf_theta_mea.get(),
+                "phi_mea": nd.buf_phi_mea.get(),
                 "tb": nd.buf_thrust_body.get(),
             }
 
@@ -414,6 +458,10 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self._set4(data["theta"], f"theta_all{i}", i)
             self._set4(data["phi"], f"phi{i}", i)
             self._set4(data["phi"], f"phi_all{i}", i)
+            self._set4(data["theta_mea"], f"theta_mea{i}", i)
+            self._set4(data["theta_mea"], f"theta_mea_all{i}", i)
+            self._set4(data["phi_mea"], f"phi_mea{i}", i)
+            self._set4(data["phi_mea"], f"phi_mea_all{i}", i)
 
         self._update_label()
         if self.state_plots:

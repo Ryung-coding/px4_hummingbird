@@ -97,21 +97,13 @@ struct ServoConfig
 
   // control[0~1]: theta1~theta2
   // control[2~5]: phi1~phi4
-// static constexpr std::array<ServoConfig, 6> DXL_SERVOS{{
-//   {0, 1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
-//   {1, 1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
-//   {2, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
-//   {3, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
-//   {4, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
-//   {5, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300}
-// }};
-
-  // 테스트 구성
-  // ID 0 = theta1 = control[0]
-  // ID 4 = phi1   = control[4]
-static constexpr std::array<ServoConfig, 2> DXL_SERVOS{{
+static constexpr std::array<ServoConfig, 6> DXL_SERVOS{{
   {0, 1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
-  {4, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300}
+  {1, -1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
+  {2, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
+  {3, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
+  {4, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
+  {5, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300}
 }};
 
 }  // namespace params

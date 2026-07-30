@@ -156,19 +156,32 @@ inline TargetCMD positionTuningPath(double t)
 
 inline TargetCMD attitudeTuningPath(double t)
 {
-  static constexpr double TUNE_SEC = 5.0;
+  static constexpr double SINE_SEC = 50.0;
+  static constexpr double HOLD_SEC = 10.0;
+  static constexpr double TOTAL_SEC = SINE_SEC + HOLD_SEC;
+  static constexpr double PEAK_TIME = SINE_SEC / 4.0;
 
   TargetCMD cmd;
 
-  const double tm = std::fmod(t, TUNE_SEC);
-  const double axis_t = tm;
-  const double w = 2.0 * M_PI / TUNE_SEC;
+  const double tm = std::fmod(t, TOTAL_SEC);
+  const double w = 2.0 * M_PI / SINE_SEC;
+
+  double attitude_scale = 0.0;
+
+  if (tm < PEAK_TIME) attitude_scale = std::sin(w * tm);
+  else if (tm < PEAK_TIME + HOLD_SEC) attitude_scale = 1.0;
+  else 
+  {
+    const double sine_time = tm - HOLD_SEC;
+    attitude_scale = std::sin(w * sine_time);
+  }
 
   cmd.x = 0.0;
   cmd.y = 0.0;
   cmd.z = 0.0;
-  cmd.roll = params::ROLL_MAX * std::sin(w * axis_t);
-  cmd.pitch = params::PITCH_MAX * std::sin(w * axis_t);
+
+  cmd.roll = params::ROLL_MAX * attitude_scale;
+  cmd.pitch = params::PITCH_MAX * attitude_scale;
   cmd.yaw = 0.0;
 
   return cmd;
@@ -178,9 +191,9 @@ inline TargetCMD steppedAttitudePath(double t)
 {
   static constexpr double ZERO_HOLD_SEC = 2.0;
   static constexpr double RAMP_SEC = 1.0;
-  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double HOLD_SEC = 1.0;
 
-  static constexpr double SWITCH_DEG = 60.0;
+  static constexpr double SWITCH_DEG = 70.0;
   static constexpr double FIRST_STEP_DEG = 10.0;
   static constexpr double SECOND_STEP_DEG = 1.0;
   static constexpr double MAX_DEG = 90.0;
