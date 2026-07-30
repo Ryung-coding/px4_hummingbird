@@ -53,8 +53,8 @@ ModuleBase::Descriptor ControlAllocator::desc{task_spawn, custom_command, print_
 
 namespace
 {
-constexpr float kHummingBirdLx = 0.1861f;
-constexpr float kHummingBirdLy = 0.1861f;
+constexpr float kHummingBirdLx = 0.175f;
+constexpr float kHummingBirdLy = 0.175;
 constexpr float kHummingBirdZeta = 0.0200f;
 constexpr float kHummingBirdVirtualLambda = 1.0e-4f;
 constexpr float kHummingBirdFMin = 1.0e-3f;
@@ -840,38 +840,6 @@ ControlAllocator::publish_hummingbird_actuator_controls()
 	for (int i = 0; i < 4; ++i) {
 		actuator_servos.control[i] = math::constrain(_hummingbird_theta_sp(i) / kHummingBirdThetaLimitRad, -1.0f, 1.0f);
 		actuator_servos.control[i + 4] = math::constrain(_hummingbird_phi_sp(i) / kHummingBirdPhiLimitRad, -1.0f, 1.0f);
-	}
-
-	// HB DEBUG: remove after high-pitch SITL allocation diagnosis.
-	static hrt_abstime last_hb_debug_pub{0};
-	const bool high_theta = fabsf(_hummingbird_theta_sp(0)) > math::radians(70.0f);
-	const bool motor_saturated = _hummingbird_motor_sp(0) > 0.98f * kHummingBirdMaxRotorThrust
-				     || _hummingbird_motor_sp(1) > 0.98f * kHummingBirdMaxRotorThrust
-				     || _hummingbird_motor_sp(2) > 0.98f * kHummingBirdMaxRotorThrust
-				     || _hummingbird_motor_sp(3) > 0.98f * kHummingBirdMaxRotorThrust;
-
-	if ((high_theta || motor_saturated) && hrt_elapsed_time(&last_hb_debug_pub) > 200_ms) {
-		last_hb_debug_pub = actuator_motors.timestamp;
-		const float e_z = -cosf(_hummingbird_theta_sp(0)) * cosf(_hummingbird_phi_sp(0));
-		const float force_norm = force_cmd.norm();
-		const float pitch_moment_per_newton = -kHummingBirdLx * e_z;
-		const float pitch_delta_required = fabsf(moment_cmd(1)) / math::max(fabsf(pitch_moment_per_newton), 1.0e-3f);
-		const float pitch_high_rotor_required = 0.25f * force_norm + 0.25f * pitch_delta_required;
-		PX4_INFO("HB DEBUG sp tau %.3f %.3f %.3f force %.3f %.3f %.3f | f %.2f %.2f %.2f %.2f",
-			 (double)moment_cmd(0), (double)moment_cmd(1), (double)moment_cmd(2),
-			 (double)force_cmd(0), (double)force_cmd(1), (double)force_cmd(2),
-			 (double)_hummingbird_motor_sp(0), (double)_hummingbird_motor_sp(1),
-			 (double)_hummingbird_motor_sp(2), (double)_hummingbird_motor_sp(3));
-		PX4_INFO("HB DEBUG theta %.1f %.1f %.1f %.1f phi %.1f %.1f %.1f %.1f motor_norm %.3f %.3f %.3f %.3f",
-			 (double)math::degrees(_hummingbird_theta_sp(0)), (double)math::degrees(_hummingbird_theta_sp(1)),
-			 (double)math::degrees(_hummingbird_theta_sp(2)), (double)math::degrees(_hummingbird_theta_sp(3)),
-			 (double)math::degrees(_hummingbird_phi_sp(0)), (double)math::degrees(_hummingbird_phi_sp(1)),
-			 (double)math::degrees(_hummingbird_phi_sp(2)), (double)math::degrees(_hummingbird_phi_sp(3)),
-			 (double)actuator_motors.control[0], (double)actuator_motors.control[1],
-			 (double)actuator_motors.control[2], (double)actuator_motors.control[3]);
-		PX4_INFO("HB DEBUG pitch_auth %.4f NmpN delta_req %.2f high_req %.2f max %.2f",
-			 (double)pitch_moment_per_newton, (double)pitch_delta_required,
-			 (double)pitch_high_rotor_required, (double)kHummingBirdMaxRotorThrust);
 	}
 
 	_actuator_motors_pub.publish(actuator_motors);

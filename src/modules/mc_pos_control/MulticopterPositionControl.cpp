@@ -690,39 +690,6 @@ void MulticopterPositionControl::Run()
 				_control.getAttitudeSetpoint(attitude_setpoint);
 			}
 
-			// HB DEBUG: remove after high-pitch SITL attitude diagnosis.
-			if (hummingbird_control_enabled) {
-				static hrt_abstime last_hb_att_debug_pub{0};
-				const Eulerf att_sp_euler(Quatf(attitude_setpoint.q_d));
-				vehicle_attitude_s debug_vehicle_attitude{};
-
-				if (!_vehicle_attitude_sub.copy(&debug_vehicle_attitude)
-				    || !PX4_ISFINITE(debug_vehicle_attitude.q[0]) || !PX4_ISFINITE(debug_vehicle_attitude.q[1])
-				    || !PX4_ISFINITE(debug_vehicle_attitude.q[2]) || !PX4_ISFINITE(debug_vehicle_attitude.q[3])) {
-					debug_vehicle_attitude.q[0] = 1.f;
-					debug_vehicle_attitude.q[1] = 0.f;
-					debug_vehicle_attitude.q[2] = 0.f;
-					debug_vehicle_attitude.q[3] = 0.f;
-				}
-
-				const Eulerf att_euler(Quatf(debug_vehicle_attitude.q));
-				const bool high_pitch = fabsf(att_sp_euler.theta()) > math::radians(65.0f)
-							    || fabsf(att_euler.theta()) > math::radians(65.0f);
-
-				if (high_pitch && hrt_elapsed_time(&last_hb_att_debug_pub) > 200_ms) {
-					last_hb_att_debug_pub = hrt_absolute_time();
-					PX4_INFO("HB DEBUG att pitch_sp %.1f pitch %.1f roll %.1f yaw %.1f thrust_body %.3f %.3f %.3f",
-						 (double)math::degrees(att_sp_euler.theta()), (double)math::degrees(att_euler.theta()),
-						 (double)math::degrees(att_euler.phi()), (double)math::degrees(att_euler.psi()),
-						 (double)attitude_setpoint.thrust_body[0], (double)attitude_setpoint.thrust_body[1],
-						 (double)attitude_setpoint.thrust_body[2]);
-					PX4_INFO("HB DEBUG pos_sp %.2f %.2f %.2f vel_sp %.2f %.2f %.2f hb_cmd %d hb_ctrl %d",
-						 (double)_setpoint.position[0], (double)_setpoint.position[1], (double)_setpoint.position[2],
-						 (double)_setpoint.velocity[0], (double)_setpoint.velocity[1], (double)_setpoint.velocity[2],
-						 _param_hb_cmd_source.get(), _param_hb_ctrl_mode.get());
-				}
-			}
-
 			attitude_setpoint.timestamp = hrt_absolute_time();
 			_vehicle_attitude_setpoint_pub.publish(attitude_setpoint);
 
