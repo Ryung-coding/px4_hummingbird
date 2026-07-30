@@ -39,18 +39,21 @@ public:
     RCLCPP_INFO(this->get_logger(), "Dynamixel ready: port=%s, baud=%d", params::DXL_PORT_NAME, params::DXL_BAUDRATE);
   }
 
-  ~Px4ServoToDynamixel() override
-  {
-    if (timeout_timer_) timeout_timer_->cancel();
+~Px4ServoToDynamixel() override
+{
+  if (timeout_timer_) timeout_timer_->cancel();
 
-    dds_sub_.reset();
-    send_zero(params::FINAL_ZERO_REPEAT_COUNT, params::FINAL_ZERO_REPEAT_INTERVAL_MS);
-    sync_write_.reset();
+  dds_sub_.reset();
 
-    if (port_handler_) port_handler_->closePort();
+  send_zero(params::FINAL_ZERO_REPEAT_COUNT, params::FINAL_ZERO_REPEAT_INTERVAL_MS);
 
-    RCLCPP_INFO(this->get_logger(), "Final zero sent. Torque remains enabled.");
-  }
+  if (torque_off_all()) RCLCPP_INFO(this->get_logger(), "Final zero sent. Torque disabled.");
+  else RCLCPP_ERROR(this->get_logger(), "Final zero sent, but torque off failed.");
+
+  sync_write_.reset();
+
+  if (port_handler_) port_handler_->closePort();
+}
 
 private:
   bool initial_setting(std::array<int32_t, params::DXL_SERVOS.size()> & initial_ppr)
@@ -130,24 +133,56 @@ private:
     {
       bool ping_ok = false;
 
-      for (int attempt = 0; attempt < params::PING_RETRY_COUNT; ++attempt)
+      for (int attempt = 1; attempt <= params::PING_RETRY_COUNT; ++attempt)
       {
         uint16_t model_number = 0;
         uint8_t dxl_error = 0;
-        const int result = packet_handler_->ping(port_handler_, servo.id, &model_number, &dxl_error);
+
+        const int result = packet_handler_->ping(
+          port_handler_,
+          servo.id,
+          &model_number,
+          &dxl_error
+        );
 
         if (result == COMM_SUCCESS && dxl_error == 0)
         {
+          RCLCPP_INFO(
+            this->get_logger(),
+            "Ping success: ID=%u, model=%u",
+            static_cast<unsigned>(servo.id),
+            static_cast<unsigned>(model_number)
+          );
+
           ping_ok = true;
           break;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(params::REGISTER_RETRY_INTERVAL_MS));
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Ping attempt %d/%d failed: ID=%u, comm=%d (%s), dxl_error=%u (%s)",
+          attempt,
+          params::PING_RETRY_COUNT,
+          static_cast<unsigned>(servo.id),
+          result,
+          packet_handler_->getTxRxResult(result),
+          static_cast<unsigned>(dxl_error),
+          packet_handler_->getRxPacketError(dxl_error)
+        );
+
+        std::this_thread::sleep_for(
+          std::chrono::milliseconds(params::REGISTER_RETRY_INTERVAL_MS)
+        );
       }
 
       if (!ping_ok)
       {
-        RCLCPP_ERROR(this->get_logger(), "Ping failed: ID=%u", static_cast<unsigned>(servo.id));
+        RCLCPP_ERROR(
+          this->get_logger(),
+          "Ping failed permanently: ID=%u",
+          static_cast<unsigned>(servo.id)
+        );
+
         return false;
       }
     }
@@ -234,64 +269,75 @@ private:
     return true;
   }
 
-  // void dds_callback(const px4_msgs::msg::ActuatorServos::SharedPtr msg)
-  // {
-  //   if (emergency_active_) return;
+  bool torque_off_all()
+{
+  if (!port_handler_ || !packet_handler_) return false;
 
-  //   std::array<int32_t, params::DXL_SERVOS.size()> goal_ppr{};
+  bool success = true;
 
-  //   for (std::size_t i = 0; i < params::DXL_SERVOS.size(); ++i)
-  //   {
-  //     const auto & servo = params::DXL_SERVOS[i];
-  //     const double normalized = std::isfinite(msg->control[i]) ? std::clamp(static_cast<double>(msg->control[i]), -1.0, 1.0) : 0.0;
-  //     const double rad = normalized * servo.angle_limit_rad;
+  for (const auto & servo : params::DXL_SERVOS)
+  {
+    uint8_t dxl_error = 0;
 
-  //     goal_ppr[i] = std::clamp(static_cast<int32_t>(std::lround(servo.zero_ppr + servo.direction * rad * params::PPR_PER_RAD)), servo.min_ppr, servo.max_ppr);
-  //   }
+    const int result = packet_handler_->write1ByteTxRx(
+      port_handler_,
+      servo.id,
+      params::ADDR_TORQUE_ENABLE,
+      params::TORQUE_OFF,
+      &dxl_error
+    );
 
-  //   if (!write_goal(goal_ppr))
-  //   {
-  //     emergency_active_ = true;
-  //     RCLCPP_ERROR(this->get_logger(), "DDS write failed. Sending zero.");
-  //     send_zero(params::FINAL_ZERO_REPEAT_COUNT, params::FINAL_ZERO_REPEAT_INTERVAL_MS);
-  //     if (rclcpp::ok()) rclcpp::shutdown();
-  //     return;
-  //   }
+    if (result != COMM_SUCCESS || dxl_error != 0)
+    {
+      success = false;
 
-  //   last_dds_time_ = this->now();
-  //   dds_received_ = true;
-  //   timeout_zero_sent_ = false;
-  // }
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Torque off failed: ID=%u, comm=%d (%s), dxl_error=%u (%s)",
+        static_cast<unsigned>(servo.id),
+        result,
+        packet_handler_->getTxRxResult(result),
+        static_cast<unsigned>(dxl_error),
+        packet_handler_->getRxPacketError(dxl_error)
+      );
+    }
+  }
+
+  return success;
+}
 
   void dds_callback(const px4_msgs::msg::ActuatorServos::SharedPtr msg)
-{
-  if (emergency_active_) return;
-
-  static constexpr std::array<std::size_t, 2> control_index{0, 4};
-  std::array<int32_t, params::DXL_SERVOS.size()> goal_ppr{};
-
-  for (std::size_t i = 0; i < params::DXL_SERVOS.size(); ++i)
   {
-    const auto & servo = params::DXL_SERVOS[i];
-    const double normalized = std::isfinite(msg->control[control_index[i]]) ? std::clamp(static_cast<double>(msg->control[control_index[i]]), -1.0, 1.0) : 0.0;
-    const double rad = normalized * servo.angle_limit_rad;
+    if (emergency_active_) return;
 
-    goal_ppr[i] = std::clamp(static_cast<int32_t>(std::lround(servo.zero_ppr + servo.direction * rad * params::PPR_PER_RAD)), servo.min_ppr, servo.max_ppr);
+    std::array<int32_t, params::DXL_SERVOS.size()> goal_ppr{};
+
+    for (std::size_t i = 0; i < params::DXL_SERVOS.size(); ++i)
+    {
+      const auto & servo = params::DXL_SERVOS[i];
+
+      // ID 0~1: theta1~theta2 -> control[0~1]
+      // ID 2~5: phi1~phi4     -> control[4~7]
+      const std::size_t control_index = servo.id < 2 ? static_cast<std::size_t>(servo.id) : static_cast<std::size_t>(servo.id + 2);
+      const double normalized = std::isfinite(msg->control[control_index]) ? std::clamp(static_cast<double>(msg->control[control_index]), -1.0, 1.0) : 0.0;
+      const double rad = normalized * servo.angle_limit_rad;
+
+      goal_ppr[i] = std::clamp(static_cast<int32_t>(std::lround(servo.zero_ppr + servo.direction * rad * params::PPR_PER_RAD)), servo.min_ppr, servo.max_ppr);
+    }
+
+    if (!write_goal(goal_ppr))
+    {
+      emergency_active_ = true;
+      RCLCPP_ERROR(this->get_logger(), "DDS write failed. Sending zero.");
+      send_zero(params::FINAL_ZERO_REPEAT_COUNT, params::FINAL_ZERO_REPEAT_INTERVAL_MS);
+      if (rclcpp::ok()) rclcpp::shutdown();
+      return;
+    }
+
+    last_dds_time_ = this->now();
+    dds_received_ = true;
+    timeout_zero_sent_ = false;
   }
-
-  if (!write_goal(goal_ppr))
-  {
-    emergency_active_ = true;
-    RCLCPP_ERROR(this->get_logger(), "DDS write failed. Sending zero.");
-    send_zero(params::FINAL_ZERO_REPEAT_COUNT, params::FINAL_ZERO_REPEAT_INTERVAL_MS);
-    if (rclcpp::ok()) rclcpp::shutdown();
-    return;
-  }
-
-  last_dds_time_ = this->now();
-  dds_received_ = true;
-  timeout_zero_sent_ = false;
-}
 
   void timeout_callback()
   {

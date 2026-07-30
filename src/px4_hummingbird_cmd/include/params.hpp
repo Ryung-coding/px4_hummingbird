@@ -41,17 +41,7 @@ static constexpr double SERVO_TIMEOUT_SEC = 0.2;
 static constexpr double SERVO_RETURN_TIME_SEC = 5.0;
 static constexpr int SERVO_PERIOD_US = static_cast<int>(1000000.0 / RATE_HZ); // not tunable
 
-// Sim 
-// ActuatorServos control[0~3] = theta1~theta4
-// ActuatorServos control[4~7] = phi1~phi4
-static constexpr std::array<const char *, 8> SERVO_TOPICS{
-  "joint_theta1", "joint_theta2", "joint_theta3", "joint_theta4",
-  "joint_phi1", "joint_phi2", "joint_phi3", "joint_phi4"
-};
-
-// Real 
-// Dynamixel communication
-static constexpr char DXL_PORT_NAME[] = "/dev/ttyUSB0";
+static constexpr char DXL_PORT_NAME[] = "/dev/dynamixel";
 
 static constexpr int DXL_BAUDRATE = 1000000;                // 1 Mbps setting1
 static constexpr double STARTUP_RETURN_TIME_SEC = 2.0;
@@ -97,21 +87,13 @@ struct ServoConfig
 
   // control[0~1]: theta1~theta2
   // control[2~5]: phi1~phi4
-// static constexpr std::array<ServoConfig, 6> DXL_SERVOS{{
-//   {0, 1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
-//   {1, 1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
-//   {2, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
-//   {3, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
-//   {4, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
-//   {5, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300}
-// }};
-
-  // 테스트 구성
-  // ID 0 = theta1 = control[0]
-  // ID 4 = phi1   = control[4]
-static constexpr std::array<ServoConfig, 2> DXL_SERVOS{{
+static constexpr std::array<ServoConfig, 6> DXL_SERVOS{{
   {0, 1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
-  {4, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300}
+  {1, -1, 2048, 0, 4095, THETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
+  {2, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
+  {3, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
+  {4, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300},
+  {5, 1, 2048, 0, 4095, PHI_LIMIT_RAD,    800, 0,  0, 100, 300}
 }};
 
 }  // namespace params
