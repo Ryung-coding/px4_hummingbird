@@ -51,7 +51,7 @@ public:
 
 	void getNormalizeRPY(bool normalize[MAX_NUM_MATRICES]) const override
 	{
-		normalize[0] = false;
+		normalize[0] = true;
 	}
 
 	const char *name() const override { return "HummingBird"; }

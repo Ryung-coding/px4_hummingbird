@@ -12,14 +12,19 @@
 
 # Quad X geometry in PX4 body FRD coordinates, relative to CG [m].
 param set-default CA_ROTOR_COUNT 4
-param set-default CA_ROTOR0_PX 0.10
-param set-default CA_ROTOR0_PY 0.14
-param set-default CA_ROTOR1_PX -0.10
-param set-default CA_ROTOR1_PY 0.14
+param set-default CA_ROTOR0_PX 0.175
+param set-default CA_ROTOR0_PY 0.175
+param set-default CA_ROTOR0_PZ -0.05
+param set-default CA_ROTOR0_KM 0.05
+param set-default CA_ROTOR1_PX -0.175
+param set-default CA_ROTOR1_PY 0.175
+param set-default CA_ROTOR1_PZ -0.05
 param set-default CA_ROTOR1_KM -0.05
-param set-default CA_ROTOR2_PX -0.10
-param set-default CA_ROTOR2_PY -0.14
+param set-default CA_ROTOR2_PX -0.175
+param set-default CA_ROTOR2_PY -0.175
+param set-default CA_ROTOR2_PZ -0.05
 param set-default CA_ROTOR2_KM 0.05
-param set-default CA_ROTOR3_PX 0.10
-param set-default CA_ROTOR3_PY -0.14
+param set-default CA_ROTOR3_PX 0.175
+param set-default CA_ROTOR3_PY -0.175
+param set-default CA_ROTOR3_PZ -0.05
 param set-default CA_ROTOR3_KM -0.05

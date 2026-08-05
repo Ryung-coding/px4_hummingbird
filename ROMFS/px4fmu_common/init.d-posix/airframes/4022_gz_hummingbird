@@ -29,21 +29,25 @@ param set CA_ROTOR_COUNT 4
 # Motor order follows the SDF naming and Gazebo motorNumber mapping:
 # rotor_0/joint_*1, rotor_1/joint_*2, rotor_2/joint_*3, rotor_3/joint_*4.
 # Gazebo SDF y is mirrored when converted to the PX4 body-y used by CA.
-param set CA_ROTOR0_PX 0.1861
-param set CA_ROTOR0_PY 0.1861
-param set CA_ROTOR0_KM 0.02
+param set CA_ROTOR0_PX 0.175
+param set CA_ROTOR0_PY 0.175
+param set CA_ROTOR0_PZ -0.05
+param set CA_ROTOR0_KM 0.05
 
-param set CA_ROTOR1_PX -0.1861
-param set CA_ROTOR1_PY 0.1861
-param set CA_ROTOR1_KM -0.02
+param set CA_ROTOR1_PX -0.175
+param set CA_ROTOR1_PY 0.175
+param set CA_ROTOR1_PZ -0.05
+param set CA_ROTOR1_KM -0.05
 
-param set CA_ROTOR2_PX -0.1861
-param set CA_ROTOR2_PY -0.1861
-param set CA_ROTOR2_KM 0.02
+param set CA_ROTOR2_PX -0.175
+param set CA_ROTOR2_PY -0.175
+param set CA_ROTOR2_PZ -0.05
+param set CA_ROTOR2_KM 0.05
 
-param set CA_ROTOR3_PX 0.1861
-param set CA_ROTOR3_PY -0.1861
-param set CA_ROTOR3_KM -0.02
+param set CA_ROTOR3_PX 0.175
+param set CA_ROTOR3_PY -0.175
+param set CA_ROTOR3_PZ -0.05
+param set CA_ROTOR3_KM -0.05
 
 # Motors: f[0..3].
 param set SIM_GZ_EC_FUNC1 101

@@ -54,8 +54,9 @@ ModuleBase::Descriptor ControlAllocator::desc{task_spawn, custom_command, print_
 namespace
 {
 constexpr float kHummingBirdLx = 0.175f;
-constexpr float kHummingBirdLy = 0.175;
-constexpr float kHummingBirdZeta = 0.0200f;
+constexpr float kHummingBirdLy = 0.175f;
+constexpr float kHummingBirdLz = -0.05f;
+constexpr float kHummingBirdZeta = 0.05f;
 constexpr float kHummingBirdVirtualLambda = 1.0e-4f;
 constexpr float kHummingBirdFMin = 1.0e-3f;
 constexpr float kHummingBirdMaxRotVelocity = 1000.0f;
@@ -98,10 +99,10 @@ HummingBirdAllocationOutput allocation_P2T2_renewal(const matrix::Vector3f &mome
 	e_cmd(2) = -cosf(theta_common) * cosf(phi_common);
 
 	const matrix::Vector3f rotor_pos[4] = {
-		{kHummingBirdLx,  kHummingBirdLy, 0.0f},
-		{-kHummingBirdLx, kHummingBirdLy, 0.0f},
-		{-kHummingBirdLx, -kHummingBirdLy, 0.0f},
-		{kHummingBirdLx, -kHummingBirdLy, 0.0f},
+		{kHummingBirdLx,  kHummingBirdLy, kHummingBirdLz},
+		{-kHummingBirdLx, kHummingBirdLy, kHummingBirdLz},
+		{-kHummingBirdLx, -kHummingBirdLy, kHummingBirdLz},
+		{kHummingBirdLx, -kHummingBirdLy, kHummingBirdLz},
 	};
 
 	const float spin[4] = {1.0f, -1.0f, 1.0f, -1.0f};
