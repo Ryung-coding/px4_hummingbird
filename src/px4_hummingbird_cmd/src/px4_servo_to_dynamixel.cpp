@@ -316,9 +316,7 @@ private:
     {
       const auto & servo = params::DXL_SERVOS[i];
 
-      // ID 0~1: theta1~theta2 -> control[0~1]
-      // ID 2~5: phi1~phi4     -> control[4~7]
-      const std::size_t control_index = servo.id < 2 ? static_cast<std::size_t>(servo.id) : static_cast<std::size_t>(servo.id + 2);
+      const std::size_t control_index = i;
       const double normalized = std::isfinite(msg->control[control_index]) ? std::clamp(static_cast<double>(msg->control[control_index]), -1.0, 1.0) : 0.0;
       const double rad = normalized * servo.angle_limit_rad;
 

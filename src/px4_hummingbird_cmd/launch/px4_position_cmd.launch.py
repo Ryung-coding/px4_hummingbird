@@ -12,14 +12,16 @@ def generate_launch_description():
     auto_arm = LaunchConfiguration("auto_arm")
     enable_gz_servo = LaunchConfiguration("enable_gz_servo")
     enable_dynamixel_servo = LaunchConfiguration("enable_dynamixel_servo")
+    enable_viewer = LaunchConfiguration("enable_viewer")
     model_name = LaunchConfiguration("model_name")
 
     return LaunchDescription([
-        DeclareLaunchArgument("path", default_value="position_tuning"),
+        DeclareLaunchArgument("path", default_value="pos"),
         DeclareLaunchArgument("auto_offboard", default_value="false"),
         DeclareLaunchArgument("auto_arm", default_value="false"),
         DeclareLaunchArgument("enable_gz_servo", default_value="false"),
         DeclareLaunchArgument("enable_dynamixel_servo", default_value="false"),
+        DeclareLaunchArgument("enable_viewer", default_value="false"),
         DeclareLaunchArgument("model_name", default_value="hummingbird_0"),
 
         Node(
@@ -49,5 +51,13 @@ def generate_launch_description():
             name="px4_servo_to_dynamixel",
             output="screen",
             condition=IfCondition(enable_dynamixel_servo),
+        ),
+
+        Node(
+            package="px4_hummingbird_cmd",
+            executable="px4_multirotor_viewer.py",
+            name="px4_multirotor_viewer",
+            output="screen",
+            condition=IfCondition(enable_viewer),
         ),
     ])

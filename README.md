@@ -77,7 +77,7 @@ PX4가 계산한 액추에이터 출력을 ROS 2에서 받는다.
 ```
 
 - PX4에서 계산된 서보 출력
-- theta, phi 틸트 서보 명령으로 사용
+- beta, alpha 틸트 서보 명령으로 사용
 
 
 ## 2-3. PX4 -> Gazebo motor
@@ -98,7 +98,7 @@ PX4 actuator_motors
 PX4 actuator_servos
         -> DDS
         -> ROS 2 px4_servo_to_gz
-        -> /model/hummingbird_0/servo_0~7
+        -> /model/hummingbird_0/joint_beta1~4, joint_alpha1~4
 ```
 
 
@@ -119,35 +119,31 @@ model_name:=hummingbird_0
 잘못 넣으면 ROS 2 bridge가 다른 Gazebo 토픽으로 publish해서 서보가 움직이지 않는다.
 
 
-# 4. 액추에이터 번호별 theta / phi 매핑
+# 4. 액추에이터 번호별 beta / alpha 매핑
 
-현재 SDF joint 구조는 다음과 같다.
+PX4 `actuator_servos`는 다음 순서로 사용한다.
 
 ```text
-rotor_i_phi_link   <- servo_4~7, phi axis
-rotor_i_theta_link <- servo_0~3, theta axis
-rotor_i            <- rotor_i_joint, prop spin
+control[0] = beta_1
+control[1] = beta_2
+control[2] = alpha_1
+control[3] = alpha_2
+control[4] = alpha_3
+control[5] = alpha_4
 ```
 
-서보 번호 의미는 다음과 같다.
+Gazebo joint는 beta 조인트가 4개라서 ROS bridge에서 앞/뒤 쌍으로 복제한다.
 
 ```text
-servo_0~3 = theta[0..3]
-servo_4~7 = phi[0..3]
-```
+actuator_servos[0] -> /model/hummingbird_0/joint_beta1
+actuator_servos[0] -> /model/hummingbird_0/joint_beta4
+actuator_servos[1] -> /model/hummingbird_0/joint_beta2
+actuator_servos[1] -> /model/hummingbird_0/joint_beta3
 
-번호별 매핑은 다음과 같다.
-
-```text
-actuator_servos[0] -> /model/hummingbird_0/servo_0 -> theta[0]
-actuator_servos[1] -> /model/hummingbird_0/servo_1 -> theta[1]
-actuator_servos[2] -> /model/hummingbird_0/servo_2 -> theta[2]
-actuator_servos[3] -> /model/hummingbird_0/servo_3 -> theta[3]
-
-actuator_servos[4] -> /model/hummingbird_0/servo_4 -> phi[0]
-actuator_servos[5] -> /model/hummingbird_0/servo_5 -> phi[1]
-actuator_servos[6] -> /model/hummingbird_0/servo_6 -> phi[2]
-actuator_servos[7] -> /model/hummingbird_0/servo_7 -> phi[3]
+actuator_servos[2] -> /model/hummingbird_0/joint_alpha1
+actuator_servos[3] -> /model/hummingbird_0/joint_alpha2
+actuator_servos[4] -> /model/hummingbird_0/joint_alpha3
+actuator_servos[5] -> /model/hummingbird_0/joint_alpha4
 ```
 
 

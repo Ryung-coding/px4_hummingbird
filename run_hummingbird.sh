@@ -2,7 +2,7 @@
 set -e
 
 WS_DIR="$HOME/Desktop/px4_hummingbird"
-PX4_DIR="$HOME/Desktop/PX4-Autopilot"
+PX4_DIR="${PX4_DIR:-$HOME/Desktop/PX4-Autopilot-v1.17-hb-v2}"
 QGC_DIR="$HOME/Applications"
 QGC_APP="$QGC_DIR/QGroundControl-x86_64.AppImage"
 LOCAL_AGENT_BIN="$WS_DIR/run_agent.sh"
@@ -57,7 +57,7 @@ start_dds_agent_if_available
 start_px4_sitl
 
 if [ "$#" -eq 0 ]; then
-  set -- auto_offboard:=true auto_arm:=true
+  set -- path:=step_att auto_offboard:=true auto_arm:=true enable_gz_servo:=true enable_viewer:=true
 fi
 
 case " $* " in

@@ -7,7 +7,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from px4_msgs.msg import ActuatorMotors, ActuatorServos, HummingbirdStatus
+from px4_msgs.msg import ActuatorMotors, ActuatorServos, HummingbirdStatus, ManualControlSetpoint
 from px4_msgs.msg import VehicleAttitude, VehicleAttitudeSetpoint
 from px4_msgs.msg import VehicleLocalPosition, VehicleLocalPositionSetpoint
 from px4_msgs.msg import VehicleThrustSetpoint, VehicleTorqueSetpoint
@@ -73,8 +73,15 @@ def quat_to_rpy_deg(q):
     return np.array([roll, pitch, yaw], dtype=np.float64) * RAD2DEG
 
 
+def finite_n(values, width):
+    out = np.zeros(width, dtype=np.float64)
+    for i, value in enumerate(values[:width]):
+        out[i] = 0.0 if not math.isfinite(float(value)) else float(value)
+    return out
+
+
 def finite4(values):
-    return np.array([0.0 if not math.isfinite(float(v)) else float(v) for v in values[:4]], dtype=np.float64)
+    return finite_n(values, 4)
 
 
 class Px4ViewerNode(Node):
@@ -83,15 +90,22 @@ class Px4ViewerNode(Node):
         self.lock = threading.Lock()
         self.t0 = self.get_clock().now().nanoseconds * 1e-9
 
-        self.theta_limit_rad = self.declare_parameter("theta_limit_rad", math.pi).value
-        self.phi_limit_rad = self.declare_parameter("phi_limit_rad", math.pi / 6.0).value
+        self.beta_limit_rad = self.declare_parameter("beta_limit_rad", math.pi).value
+        self.alpha_limit_rad = self.declare_parameter("alpha_limit_rad", math.pi / 6.0).value
         self.max_rotor_thrust = self.declare_parameter("max_rotor_thrust", 24.0).value
 
         self.last_pos_sp = np.zeros(3, dtype=np.float64)
         self.last_att_sp_deg = np.zeros(3, dtype=np.float64)
         self.last_thrust_sp = np.zeros(3, dtype=np.float64)
         self.last_torque_sp = np.zeros(3, dtype=np.float64)
-        self.last_status = "HB cmd: ?  ctrl: ?"
+        self.last_motor_controls = np.zeros(4, dtype=np.float64)
+        self.last_motor_forces = np.zeros(4, dtype=np.float64)
+        self.last_servo_controls = np.zeros(6, dtype=np.float64)
+        self.last_manual = np.zeros(4, dtype=np.float64)
+        self.last_manual_valid = False
+        self.last_manual_source = 0
+        self.last_sticks_moving = False
+        self.last_status = "HB cmd: ?  ctrl: ?  dds: ?  hb: ?"
 
         self.max_pos_err_abs = np.zeros(3, dtype=np.float64)
         self.max_att_err_abs = np.zeros(3, dtype=np.float64)
@@ -109,8 +123,8 @@ class Px4ViewerNode(Node):
         self.buf_force = Ring(MAX_SAMPLES, 4)
         self.buf_torque = Ring(MAX_SAMPLES, 4)
         self.buf_motor = Ring(MAX_SAMPLES, 5)
-        self.buf_theta = Ring(MAX_SAMPLES, 5)
-        self.buf_phi = Ring(MAX_SAMPLES, 5)
+        self.buf_beta = Ring(MAX_SAMPLES, 3)
+        self.buf_alpha = Ring(MAX_SAMPLES, 5)
         self.buf_thrust_body = Ring(MAX_SAMPLES, 4)
 
         qos = QoSProfile(
@@ -126,6 +140,7 @@ class Px4ViewerNode(Node):
         self.create_subscription(VehicleAttitudeSetpoint, "/fmu/out/vehicle_attitude_setpoint_v1", self._cb_att_sp, qos)
         self.create_subscription(VehicleThrustSetpoint, "/fmu/out/vehicle_thrust_setpoint", self._cb_thrust, qos)
         self.create_subscription(VehicleTorqueSetpoint, "/fmu/out/vehicle_torque_setpoint", self._cb_torque, qos)
+        self.create_subscription(ManualControlSetpoint, "/fmu/out/manual_control_setpoint", self._cb_manual, qos)
         self.create_subscription(ActuatorMotors, "/fmu/out/actuator_motors", self._cb_motors, qos)
         self.create_subscription(ActuatorServos, "/fmu/out/actuator_servos", self._cb_servos, qos)
         self.create_subscription(HummingbirdStatus, "/fmu/out/hummingbird_status", self._cb_status, qos)
@@ -196,19 +211,39 @@ class Px4ViewerNode(Node):
         controls = finite4(msg.control)
         force = np.square(np.clip(controls, 0.0, 1.0)) * self.max_rotor_thrust
         with self.lock:
+            self.last_motor_controls = controls
+            self.last_motor_forces = force
             self.buf_motor.push([t, force[0], force[1], force[2], force[3]])
+
+    def _cb_manual(self, msg):
+        manual = np.array([msg.roll, msg.pitch, msg.yaw, msg.throttle], dtype=np.float64)
+        with self.lock:
+            self.last_manual = manual
+            self.last_manual_valid = bool(msg.valid)
+            self.last_manual_source = int(msg.data_source)
+            self.last_sticks_moving = bool(msg.sticks_moving)
 
     def _cb_servos(self, msg):
         t = self._t()
-        theta = finite4(msg.control[0:4]) * self.theta_limit_rad * RAD2DEG
-        phi = finite4(msg.control[4:8]) * self.phi_limit_rad * RAD2DEG
+        controls = finite_n(msg.control, 6)
+        beta = finite_n(msg.control[0:2], 2) * self.beta_limit_rad * RAD2DEG
+        alpha = finite_n(msg.control[2:6], 4) * self.alpha_limit_rad * RAD2DEG
         with self.lock:
-            self.buf_theta.push([t, theta[0], theta[1], theta[2], theta[3]])
-            self.buf_phi.push([t, phi[0], phi[1], phi[2], phi[3]])
+            self.last_servo_controls = controls
+            self.buf_beta.push([t, beta[0], beta[1]])
+            self.buf_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
 
     def _cb_status(self, msg):
+        hb_enabled = getattr(
+            msg,
+            "hummingbird_control_enabled",
+            getattr(msg, "fully_actuated_control_enabled", False),
+        )
         with self.lock:
-            self.last_status = f"HB cmd: {msg.hb_cmd_source}  ctrl: {msg.hb_ctrl_mode}"
+            self.last_status = (
+                f"HB cmd: {msg.hb_cmd_source}  ctrl: {msg.hb_ctrl_mode}  "
+                f"dds: {int(msg.dds_command_enabled)}  hb: {int(hb_enabled)}"
+            )
 
 
 def _pen(color, width=2):
@@ -307,13 +342,13 @@ class ViewerWindow(QtWidgets.QMainWindow):
             p = _mkplot(self.act_glw, 0, i, f"f{i + 1}", "force [N]")
             self.cv[f"motor{i}"] = p.plot(pen=_pen(color), name=f"f{i + 1}")
             self.act_plots.append(p)
-        for i, color in enumerate(C4):
-            p = _mkplot(self.act_glw, 1, i, f"theta{i + 1}", "theta [deg]")
-            self.cv[f"theta{i}"] = p.plot(pen=_pen(color), name=f"theta{i + 1}")
+        for i, color in enumerate(C4[:2]):
+            p = _mkplot(self.act_glw, 1, i, f"beta{i + 1}", "beta [deg]")
+            self.cv[f"beta{i}"] = p.plot(pen=_pen(color), name=f"beta{i + 1}")
             self.act_plots.append(p)
         for i, color in enumerate(C4):
-            p = _mkplot(self.act_glw, 2, i, f"phi{i + 1}", "phi [deg]")
-            self.cv[f"phi{i}"] = p.plot(pen=_pen(color), name=f"phi{i + 1}")
+            p = _mkplot(self.act_glw, 2, i, f"alpha{i + 1}", "alpha [deg]")
+            self.cv[f"alpha{i}"] = p.plot(pen=_pen(color), name=f"alpha{i + 1}")
             self.act_plots.append(p)
 
         p_all = _mkplot(self.act_glw, 3, 0, "f1-f4", "force [N]")
@@ -321,15 +356,15 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self.cv[f"motor_all{i}"] = p_all.plot(pen=_pen(color), name=f"f{i + 1}")
         self.act_plots.append(p_all)
 
-        p_theta = _mkplot(self.act_glw, 3, 1, "theta1-theta4", "theta [deg]")
-        for i, color in enumerate(C4):
-            self.cv[f"theta_all{i}"] = p_theta.plot(pen=_pen(color), name=f"theta{i + 1}")
-        self.act_plots.append(p_theta)
+        p_beta = _mkplot(self.act_glw, 3, 1, "beta1-beta2", "beta [deg]")
+        for i, color in enumerate(C4[:2]):
+            self.cv[f"beta_all{i}"] = p_beta.plot(pen=_pen(color), name=f"beta{i + 1}")
+        self.act_plots.append(p_beta)
 
-        p_phi = _mkplot(self.act_glw, 3, 2, "phi1-phi4", "phi [deg]")
+        p_alpha = _mkplot(self.act_glw, 3, 2, "alpha1-alpha4", "alpha [deg]")
         for i, color in enumerate(C4):
-            self.cv[f"phi_all{i}"] = p_phi.plot(pen=_pen(color), name=f"phi{i + 1}")
-        self.act_plots.append(p_phi)
+            self.cv[f"alpha_all{i}"] = p_alpha.plot(pen=_pen(color), name=f"alpha{i + 1}")
+        self.act_plots.append(p_alpha)
 
         p_tb = _mkplot(self.act_glw, 3, 3, "thrust_body", "norm")
         for i, color in enumerate(C3):
@@ -357,11 +392,24 @@ class ViewerWindow(QtWidgets.QMainWindow):
             pos_t = nd.max_pos_err_time
             att_t = nd.max_att_err_time
             status = nd.last_status
+            motor = nd.last_motor_controls.copy()
+            force = nd.last_motor_forces.copy()
+            servo = nd.last_servo_controls.copy()
+            manual = nd.last_manual.copy()
+            manual_valid = nd.last_manual_valid
+            manual_source = nd.last_manual_source
+            sticks_moving = nd.last_sticks_moving
         self.max_label.setText(
             "<div style='font-size:13pt; color:#111;'>"
             f"<b>{status}</b><br>"
+            f"manual: valid {int(manual_valid)}, source {manual_source}, moving {int(sticks_moving)}, "
+            f"r/p/y/t [{manual[0]:.3f}, {manual[1]:.3f}, {manual[2]:.3f}, {manual[3]:.3f}]<br>"
             f"pos err max [m]: x {pos[0]:.3f}, y {pos[1]:.3f}, z {pos[2]:.3f}, norm {pos_n:.3f} @ {pos_t:.2f}s<br>"
-            f"att err max [deg]: roll {att[0]:.2f}, pitch {att[1]:.2f}, yaw {att[2]:.2f}, norm {att_n:.2f} @ {att_t:.2f}s"
+            f"att err max [deg]: roll {att[0]:.2f}, pitch {att[1]:.2f}, yaw {att[2]:.2f}, norm {att_n:.2f} @ {att_t:.2f}s<br>"
+            f"actuator_servos raw: beta [{servo[0]:.3f}, {servo[1]:.3f}] "
+            f"alpha [{servo[2]:.3f}, {servo[3]:.3f}, {servo[4]:.3f}, {servo[5]:.3f}]<br>"
+            f"actuator_motors raw: [{motor[0]:.3f}, {motor[1]:.3f}, {motor[2]:.3f}, {motor[3]:.3f}]  "
+            f"force [N]: [{force[0]:.2f}, {force[1]:.2f}, {force[2]:.2f}, {force[3]:.2f}]"
             "</div>"
         )
 
@@ -378,8 +426,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
                 "force": nd.buf_force.get(),
                 "torque": nd.buf_torque.get(),
                 "motor": nd.buf_motor.get(),
-                "theta": nd.buf_theta.get(),
-                "phi": nd.buf_phi.get(),
+                "beta": nd.buf_beta.get(),
+                "alpha": nd.buf_alpha.get(),
                 "tb": nd.buf_thrust_body.get(),
             }
 
@@ -410,10 +458,11 @@ class ViewerWindow(QtWidgets.QMainWindow):
         for i in range(4):
             self._set4(data["motor"], f"motor{i}", i)
             self._set4(data["motor"], f"motor_all{i}", i)
-            self._set4(data["theta"], f"theta{i}", i)
-            self._set4(data["theta"], f"theta_all{i}", i)
-            self._set4(data["phi"], f"phi{i}", i)
-            self._set4(data["phi"], f"phi_all{i}", i)
+            self._set4(data["alpha"], f"alpha{i}", i)
+            self._set4(data["alpha"], f"alpha_all{i}", i)
+        for i in range(2):
+            self._set3(data["beta"], f"beta{i}", i)
+            self._set3(data["beta"], f"beta_all{i}", i)
 
         self._update_label()
         if self.state_plots:

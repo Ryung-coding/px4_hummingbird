@@ -105,32 +105,19 @@ private:
     last_actuator_msg_time_ = this->now();
     returning_to_zero_ = false;
 
-    for (std::size_t i = 0; i < params::SERVO_TOPICS.size() / 2; ++i)
+    for (std::size_t i = 0; i < params::SERVO_TOPICS.size(); ++i)
     {
-      const std::size_t phi_index = i + params::SERVO_TOPICS.size() / 2;
+      const std::size_t control_index = params::SERVO_CONTROL_INDEX[i];
+      const double normalized = std::isfinite(msg->control[control_index]) ? std::clamp(static_cast<double>(msg->control[control_index]), -1.0, 1.0) : 0.0;
+      const double command = normalized * params::SERVO_LIMIT_RAD[i];
 
-      const double theta_normalized = std::isfinite(msg->control[i]) ? std::clamp(static_cast<double>(msg->control[i]), -1.0, 1.0) : 0.0;
-      const double phi_normalized = std::isfinite(msg->control[phi_index]) ? std::clamp(static_cast<double>(msg->control[phi_index]), -1.0, 1.0) : 0.0;
+      servo_lpf_[i].reset(command);
 
-      const double theta_command = theta_normalized * params::THETA_LIMIT_RAD;
-      const double phi_command = phi_normalized * params::PHI_LIMIT_RAD;
+      if (!servo_pubs_[i].Valid()) continue;
 
-      servo_lpf_[i].reset(theta_command);
-      servo_lpf_[phi_index].reset(phi_command);
-
-      if (servo_pubs_[i].Valid())
-      {
-        gz::msgs::Double theta_msg;
-        theta_msg.set_data(theta_command);
-        servo_pubs_[i].Publish(theta_msg);
-      }
-
-      if (servo_pubs_[phi_index].Valid())
-      {
-        gz::msgs::Double phi_msg;
-        phi_msg.set_data(phi_command);
-        servo_pubs_[phi_index].Publish(phi_msg);
-      }
+      gz::msgs::Double servo_msg;
+      servo_msg.set_data(command);
+      servo_pubs_[i].Publish(servo_msg);
     }
   }
 

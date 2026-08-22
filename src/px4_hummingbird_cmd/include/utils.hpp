@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Eigen/Dense>
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <sstream>
@@ -57,12 +56,12 @@ struct TargetCMD {
 };
 
 struct HandoffFilters {
-  LPF x{params::handoff_run_time_sec};
-  LPF y{params::handoff_run_time_sec};
-  LPF z{params::handoff_run_time_sec};
-  LPF roll{params::handoff_run_time_sec};
-  LPF pitch{params::handoff_run_time_sec};
-  LPF yaw{params::handoff_run_time_sec};
+  LPF x{params::handoff_runtime};
+  LPF y{params::handoff_runtime};
+  LPF z{params::handoff_runtime};
+  LPF roll{params::handoff_runtime};
+  LPF pitch{params::handoff_runtime};
+  LPF yaw{params::handoff_runtime};
 
   void reset(const TargetCMD& cmd)
   {
@@ -100,15 +99,49 @@ inline double unwrapNear(double target, double reference)
   return target;
 }
 
-inline TargetCMD DDS2manual_handoff(const TargetCMD& last_cmd, double vehicle_x_ned, double vehicle_y_ned, double vehicle_z_ned, double vehicle_yaw_ned, double rc_roll, double rc_pitch, double rc_yaw, double position_offset_max, double yaw_offset_max, HandoffFilters& filters)
+inline double angleErrorAbs(double actual, double target)
 {
-  TargetCMD target;
-  target.x = vehicle_x_ned + std::clamp(rc_pitch, -1.0, 1.0) * position_offset_max;
-  target.y = vehicle_y_ned + std::clamp(rc_roll, -1.0, 1.0) * position_offset_max;
-  target.z = -vehicle_z_ned;
-  target.roll = 0.0;
-  target.pitch = 0.0;
-  target.yaw = unwrapNear(vehicle_yaw_ned + std::clamp(rc_yaw, -1.0, 1.0) * yaw_offset_max, last_cmd.yaw);
+  return std::abs(unwrapNear(actual, target) - target);
+}
+
+inline Eigen::Vector3d quatToRpy(const Eigen::Vector4d& q)
+{
+  const double w = q(0);
+  const double x = q(1);
+  const double y = q(2);
+  const double z = q(3);
+
+  const double sinr_cosp = 2.0 * (w * x + y * z);
+  const double cosr_cosp = 1.0 - 2.0 * (x * x + y * y);
+  const double roll = std::atan2(sinr_cosp, cosr_cosp);
+
+  const double sinp = 2.0 * (w * y - z * x);
+  const double pitch = std::abs(sinp) >= 1.0 ? std::copysign(M_PI / 2.0, sinp) : std::asin(sinp);
+
+  const double siny_cosp = 2.0 * (w * z + x * y);
+  const double cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
+  const double yaw = std::atan2(siny_cosp, cosy_cosp);
+
+  return Eigen::Vector3d(roll, pitch, yaw);
+}
+
+
+inline TargetCMD initialPose()
+{
+  TargetCMD cmd;
+  cmd.x = params::initial_pose_x_m;
+  cmd.y = params::initial_pose_y_m;
+  cmd.z = params::initial_pose_z_m;
+  cmd.roll = params::initial_pose_roll_rad;
+  cmd.pitch = params::initial_pose_pitch_rad;
+  cmd.yaw = params::initial_pose_yaw_rad;
+  return cmd;
+}
+
+inline TargetCMD RC2DDS_handoff(const TargetCMD& initial_pose, HandoffFilters& filters)
+{
+  TargetCMD target = initial_pose;
+  target.yaw = unwrapNear(target.yaw, filters.yaw.y);
 
   TargetCMD cmd;
   cmd.x = filters.x.update(target.x);
@@ -121,7 +154,7 @@ inline TargetCMD DDS2manual_handoff(const TargetCMD& last_cmd, double vehicle_x_
 }
 
 // Path utils =========================================================
-inline TargetCMD positionTuningPath(double t)
+inline TargetCMD posPath(double t)
 {
   static constexpr double SEG_SEC = 5.0;
   static constexpr double XY = 1.0;
@@ -154,7 +187,7 @@ inline TargetCMD positionTuningPath(double t)
   return cmd;
 }
 
-inline TargetCMD attitudeTuningPath(double t)
+inline TargetCMD attPath(double t)
 {
   static constexpr double TUNE_SEC = 5.0;
 
@@ -174,7 +207,7 @@ inline TargetCMD attitudeTuningPath(double t)
   return cmd;
 }
 
-inline TargetCMD steppedAttitudePath(double t)
+inline TargetCMD stepAttPath(double t)
 {
   static constexpr double ZERO_HOLD_SEC = 2.0;
   static constexpr double RAMP_SEC = 1.0;
@@ -244,103 +277,5 @@ inline TargetCMD steppedAttitudePath(double t)
   return cmd;
 }
 
-inline TargetCMD agilePath(double t)
-{
-  TargetCMD cmd;
-
-  const double tm = t;
-  const double w = 2.0 * M_PI / params::SCAN_PERIOD_SEC;
-  const double p = w * tm;
-
-  cmd.x = params::RADIUS * std::sin(p);
-  cmd.y = params::RADIUS * std::sin(p) * std::cos(p);
-  cmd.z = params::RADIUS * std::sin(params::PITCH_MAX) * std::sin(p);
-
-  cmd.roll = params::ROLL_MAX * std::sin(p);
-  cmd.pitch = params::PITCH_MAX * std::sin(p + 0.5 * M_PI);
-  cmd.yaw = params::YAW_MAX * std::sin(p);
-
-  return cmd;
-}
-
-inline TargetCMD positionTrack(double t)
-{
-  static constexpr double distance_x = 1.0; // [m]
-  static constexpr double distance_y = 1.0; // [m]
-
-  static constexpr double vel_x = 1.0; // [m/s]
-  static constexpr double vel_y = 1.0; // [m/s]
-
-  const double X_SEG_SEC = distance_x / vel_x;
-  const double Y_SEG_SEC = distance_y / vel_y;
-
-  TargetCMD cmd;
-
-  const double tm = t;
-  const double cycle = 2.0 * X_SEG_SEC + 2.0 * Y_SEG_SEC;
-  const double tc = std::fmod(tm, cycle);
-
-  cmd.x = 0.0;
-  cmd.y = 0.0;
-  cmd.z = 0.0;
-  cmd.roll = 0.0;
-  cmd.pitch = 0.0;
-  cmd.yaw = 0.0;
-
-  if (tc < X_SEG_SEC) 
-  {
-    const double a = tc / X_SEG_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = distance_x * s;
-    cmd.y = 0.0;
-
-    return cmd;
-  }
-
-  if (tc < X_SEG_SEC + Y_SEG_SEC) 
-  {
-    const double a = (tc - X_SEG_SEC) / Y_SEG_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = distance_x;
-    cmd.y = distance_y * s;
-
-    return cmd;
-  }
-
-  if (tc < 2.0 * X_SEG_SEC + Y_SEG_SEC) 
-  {
-    const double a = (tc - X_SEG_SEC - Y_SEG_SEC) / X_SEG_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = distance_x * (1.0 - s);
-    cmd.y = distance_y;
-
-    return cmd;
-  }
-
-  {
-    const double a = (tc - 2.0 * X_SEG_SEC - Y_SEG_SEC) / Y_SEG_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = 0.0;
-    cmd.y = distance_y * (1.0 - s);
-
-    return cmd;
-  }
-}
-
-inline TargetCMD hover(double)
-{
-  TargetCMD cmd;
-  cmd.x = 0.0;
-  cmd.y = 0.0;
-  cmd.z = 0.0;
-  cmd.roll = 0.0;
-  cmd.pitch = 0.0;
-  cmd.yaw = 0.0;
-  return cmd;
-}
 
 }
