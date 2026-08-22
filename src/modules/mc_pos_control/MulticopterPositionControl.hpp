@@ -59,8 +59,11 @@
 #include <uORB/Subscription.hpp>
 #include <uORB/SubscriptionCallback.hpp>
 #include <uORB/topics/hover_thrust_estimate.h>
+#include <uORB/topics/hummingbird_status.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/trajectory_setpoint.h>
+#include <uORB/topics/trajectory_setpoint6dof.h>
+#include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_constraints.h>
 #include <uORB/topics/vehicle_control_mode.h>
@@ -98,6 +101,7 @@ private:
 	uORB::PublicationData<takeoff_status_s>              _takeoff_status_pub{ORB_ID(takeoff_status)};
 	uORB::Publication<vehicle_attitude_setpoint_s>	     _vehicle_attitude_setpoint_pub{ORB_ID(vehicle_attitude_setpoint)};
 	uORB::Publication<vehicle_local_position_setpoint_s> _local_pos_sp_pub{ORB_ID(vehicle_local_position_setpoint)};	/**< vehicle local position setpoint publication */
+	uORB::Publication<hummingbird_status_s>        _hummingbird_status_pub{ORB_ID(hummingbird_status)};
 
 	uORB::SubscriptionCallbackWorkItem _local_pos_sub{this, ORB_ID(vehicle_local_position)};	/**< vehicle local position */
 
@@ -105,6 +109,8 @@ private:
 
 	uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
+	uORB::Subscription _trajectory_setpoint6dof_sub{ORB_ID(trajectory_setpoint6dof)};
+	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _vehicle_constraints_sub{ORB_ID(vehicle_constraints)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
@@ -115,6 +121,8 @@ private:
 	trajectory_setpoint_s _setpoint{PositionControl::empty_trajectory_setpoint};
 	trajectory_setpoint_s _last_valid_setpoint{PositionControl::empty_trajectory_setpoint};
 	vehicle_control_mode_s _vehicle_control_mode{};
+	matrix::Quatf _hummingbird_attitude_setpoint{1.f, 0.f, 0.f, 0.f};
+	hrt_abstime _hummingbird_attitude_setpoint_time{0};
 
 	vehicle_constraints_s _vehicle_constraints {
 		.timestamp = 0,
@@ -189,7 +197,10 @@ private:
 
 		(ParamFloat<px4::params::MPC_XY_ERR_MAX>) _param_mpc_xy_err_max,
 		(ParamFloat<px4::params::MPC_YAWRAUTO_MAX>) _param_mpc_yawrauto_max,
-		(ParamFloat<px4::params::MPC_YAWRAUTO_ACC>) _param_mpc_yawrauto_acc
+		(ParamFloat<px4::params::MPC_YAWRAUTO_ACC>) _param_mpc_yawrauto_acc,
+		(ParamInt<px4::params::CA_AIRFRAME>) _param_ca_airframe,
+		(ParamInt<px4::params::HB_CTRL_MODE>) _param_hb_ctrl_mode,
+		(ParamInt<px4::params::HB_CMD_SOURCE>) _param_hb_cmd_source
 	);
 
 	math::WelfordMean<float> _sample_interval_s{};
@@ -207,6 +218,7 @@ private:
 	PositionControl _control; ///< class for core PID position control
 
 	hrt_abstime _last_warn{0}; /**< timer when the last warn message was sent out */
+	hrt_abstime _last_hummingbird_status_pub{0};
 
 	bool _hover_thrust_initialized{false};
 

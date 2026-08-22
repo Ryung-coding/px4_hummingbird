@@ -186,6 +186,14 @@ public:
 	void getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const;
 
 	/**
+	 * Get a fully-actuated attitude setpoint for HummingBird.
+	 * The position controller thrust output is passed through as body-frame force.
+	 */
+	void getHummingBirdAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint,
+					    const matrix::Quatf &current_attitude,
+					    const matrix::Quatf *attitude_sp = nullptr) const;
+
+	/**
 	 * All setpoints are set to NAN (uncontrolled). Timestampt zero.
 	 */
 	static const trajectory_setpoint_s empty_trajectory_setpoint;

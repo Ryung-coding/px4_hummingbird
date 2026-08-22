@@ -49,6 +49,102 @@
 using namespace matrix;
 using namespace time_literals;
 
+namespace
+{
+constexpr float kHummingBirdLx = 0.175f;
+constexpr float kHummingBirdLy = 0.175f;
+constexpr float kHummingBirdLz = -0.05f;
+constexpr float kHummingBirdZeta = 0.05f;
+constexpr float kHummingBirdVirtualLambda = 1.0e-4f;
+constexpr float kHummingBirdFMin = 1.0e-3f;
+constexpr float kHummingBirdGfToNewton = 9.80665e-3f;
+constexpr float kHummingBirdMaxRotorThrustGf = 1961.04f;
+constexpr float kHummingBirdMaxRotorThrust = kHummingBirdMaxRotorThrustGf * kHummingBirdGfToNewton;
+constexpr float kHummingBirdMaxTotalThrust = 4.0f * kHummingBirdMaxRotorThrust;
+constexpr float kHummingBirdMaxMoment = 4.0f * kHummingBirdMaxRotorThrust * kHummingBirdLx;
+constexpr float kHummingBirdBetaLimitRad = M_PI_F;
+constexpr float kHummingBirdAlphaLimitRad = M_PI_F / 6.0f;
+
+struct HummingBirdAllocationOutput
+{
+	matrix::Vector<float, 4> f{};
+	matrix::Vector<float, 2> beta{};
+	matrix::Vector<float, 4> alpha{};
+};
+
+HummingBirdAllocationOutput allocation_P2T2_renewal(const matrix::Vector3f &moment_cmd, const matrix::Vector3f &force_cmd)
+{
+	using Matrix44f = matrix::Matrix<float, 4, 4>;
+	using Vector4f = matrix::Vector<float, 4>;
+
+	const float force_norm_raw = force_cmd.norm();
+	const float force_norm = math::max(force_norm_raw, kHummingBirdFMin);
+	matrix::Vector3f common_dir = force_cmd / force_norm;
+
+	if (force_norm_raw <= kHummingBirdFMin) {
+		common_dir(0) = 0.0f;
+		common_dir(1) = 0.0f;
+		common_dir(2) = -1.0f;
+	}
+
+	const float beta_common = math::constrain(atan2f(-common_dir(0), -common_dir(2)),
+					       -kHummingBirdBetaLimitRad, kHummingBirdBetaLimitRad);
+	const float alpha_common = math::constrain(asinf(math::constrain(common_dir(1), -1.0f, 1.0f)),
+						-kHummingBirdAlphaLimitRad, kHummingBirdAlphaLimitRad);
+
+	matrix::Vector3f e_cmd{};
+	e_cmd(0) = -sinf(beta_common) * cosf(alpha_common);
+	e_cmd(1) = sinf(alpha_common);
+	e_cmd(2) = -cosf(beta_common) * cosf(alpha_common);
+
+	const matrix::Vector3f rotor_pos[4] = {
+		{kHummingBirdLx,  kHummingBirdLy, kHummingBirdLz},
+		{-kHummingBirdLx, kHummingBirdLy, kHummingBirdLz},
+		{-kHummingBirdLx, -kHummingBirdLy, kHummingBirdLz},
+		{kHummingBirdLx, -kHummingBirdLy, kHummingBirdLz},
+	};
+
+	const float spin[4] = {1.0f, -1.0f, 1.0f, -1.0f};
+
+	Matrix44f B{};
+
+	for (int i = 0; i < 4; ++i) {
+		const matrix::Vector3f moment_per_newton = rotor_pos[i].cross(e_cmd) - spin[i] * kHummingBirdZeta * e_cmd;
+		B(0, i) = moment_per_newton(0);
+		B(1, i) = moment_per_newton(1);
+		B(2, i) = moment_per_newton(2);
+		B(3, i) = 1.0f;
+	}
+
+	Vector4f target{};
+	target(0) = moment_cmd(0);
+	target(1) = moment_cmd(1);
+	target(2) = moment_cmd(2);
+	target(3) = force_norm;
+
+	matrix::SquareMatrix<float, 4> H = B * B.T();
+
+	for (int i = 0; i < 4; ++i) {
+		H(i, i) += kHummingBirdVirtualLambda * kHummingBirdVirtualLambda;
+	}
+
+	const Vector4f thrust_raw = B.T() * H.I() * target;
+
+	HummingBirdAllocationOutput out{};
+
+	for (int i = 0; i < 4; ++i) {
+		out.f(i) = math::constrain(thrust_raw(i), 0.0f, kHummingBirdMaxRotorThrust);
+		out.alpha(i) = alpha_common;
+	}
+
+	// beta_1 drives rotors 1/4, beta_2 drives rotors 2/3. They are equal in the current allocator.
+	out.beta(0) = beta_common;
+	out.beta(1) = beta_common;
+
+	return out;
+}
+}
+
 ControlAllocator::ControlAllocator() :
 	ModuleParams(nullptr),
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl),
@@ -271,6 +367,10 @@ ControlAllocator::update_effectiveness_source()
 
 		case EffectivenessSource::SPACECRAFT_3D:
 			tmp = new ActuatorEffectivenessSpacecraft(this);
+			break;
+
+		case EffectivenessSource::HUMMINGBIRD:
+			tmp = new ActuatorEffectivenessHummingBird(this);
 			break;
 
 		default:
@@ -647,9 +747,63 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 }
 
 void
+ControlAllocator::publish_hummingbird_actuator_controls()
+{
+	actuator_motors_s actuator_motors{};
+	actuator_motors.timestamp = hrt_absolute_time();
+	actuator_motors.timestamp_sample = _timestamp_sample;
+	actuator_motors.reversible_flags = _param_r_rev.get();
+
+	actuator_servos_s actuator_servos{};
+	actuator_servos.timestamp = actuator_motors.timestamp;
+	actuator_servos.timestamp_sample = _timestamp_sample;
+
+	const matrix::Vector3f moment_cmd = _torque_sp * kHummingBirdMaxMoment;
+	const matrix::Vector3f force_cmd = _thrust_sp * kHummingBirdMaxTotalThrust;
+
+	const HummingBirdAllocationOutput allocation = allocation_P2T2_renewal(moment_cmd, force_cmd);
+
+	_hummingbird_motor_sp = allocation.f;
+	_hummingbird_beta_sp = allocation.beta;
+	_hummingbird_alpha_sp = allocation.alpha;
+
+	for (int i = 0; i < actuator_motors_s::NUM_CONTROLS; ++i) {
+		actuator_motors.control[i] = NAN;
+	}
+
+	for (int i = 0; i < 4; ++i) {
+		if (PX4_ISFINITE(_hummingbird_motor_sp(i))) {
+			actuator_motors.control[i] = sqrtf(math::constrain(_hummingbird_motor_sp(i) / kHummingBirdMaxRotorThrust, 0.0f, 1.0f));
+
+		} else {
+			actuator_motors.control[i] = NAN;
+		}
+	}
+
+	for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; ++i) {
+		actuator_servos.control[i] = 0.0f;
+	}
+
+	actuator_servos.control[0] = math::constrain(_hummingbird_beta_sp(0) / kHummingBirdBetaLimitRad, -1.0f, 1.0f);
+	actuator_servos.control[1] = math::constrain(_hummingbird_beta_sp(1) / kHummingBirdBetaLimitRad, -1.0f, 1.0f);
+
+	for (int i = 0; i < 4; ++i) {
+		actuator_servos.control[i + 2] = math::constrain(_hummingbird_alpha_sp(i) / kHummingBirdAlphaLimitRad, -1.0f, 1.0f);
+	}
+
+	_actuator_motors_pub.publish(actuator_motors);
+	_actuator_servos_pub.publish(actuator_servos);
+}
+
+void
 ControlAllocator::publish_actuator_controls()
 {
 	if (!_publish_controls) {
+		return;
+	}
+
+	if (_effectiveness_source_id == EffectivenessSource::HUMMINGBIRD && _param_hb_ctrl_mode.get() == 1) {
+		publish_hummingbird_actuator_controls();
 		return;
 	}
 
@@ -691,6 +845,15 @@ ControlAllocator::publish_actuator_controls()
 	}
 
 	_actuator_motors_pub.publish(actuator_motors);
+
+	if (_effectiveness_source_id == EffectivenessSource::HUMMINGBIRD) {
+		for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; ++i) {
+			actuator_servos.control[i] = 0.0f;
+		}
+
+		_actuator_servos_pub.publish(actuator_servos);
+		return;
+	}
 
 	// servos
 	if (_num_actuators[1] > 0) {

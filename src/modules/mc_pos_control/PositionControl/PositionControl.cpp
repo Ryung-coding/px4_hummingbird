@@ -268,3 +268,20 @@ void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_
 	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, attitude_setpoint);
 	attitude_setpoint.yaw_sp_move_rate = _yawspeed_sp;
 }
+
+void PositionControl::getHummingBirdAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint,
+		const Quatf &current_attitude, const Quatf *attitude_sp) const
+{
+	if (attitude_sp != nullptr) {
+		attitude_sp->copyTo(attitude_setpoint.q_d);
+
+	} else {
+		const float yaw_des = PX4_ISFINITE(_yaw_sp) ? _yaw_sp : _yaw;
+		const Quatf q_des(Eulerf(0.f, 0.f, yaw_des));
+		q_des.copyTo(attitude_setpoint.q_d);
+	}
+
+	const Vector3f force_body = Dcmf(current_attitude).transpose() * _thr_sp;
+	force_body.copyTo(attitude_setpoint.thrust_body);
+	attitude_setpoint.yaw_sp_move_rate = _yawspeed_sp;
+}

@@ -43,6 +43,7 @@
 
 #include <ActuatorEffectiveness.hpp>
 #include <ActuatorEffectivenessMultirotor.hpp>
+#include <ActuatorEffectivenessHummingBird.hpp>
 #include <ActuatorEffectivenessStandardVTOL.hpp>
 #include <ActuatorEffectivenessTiltrotorVTOL.hpp>
 #include <ActuatorEffectivenessTailsitterVTOL.hpp>
@@ -138,6 +139,7 @@ private:
 	void publish_control_allocator_status(int matrix_index);
 
 	void publish_actuator_controls();
+	void publish_hummingbird_actuator_controls();
 
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
@@ -161,6 +163,7 @@ private:
 		HELICOPTER_COAXIAL = 12,
 		SPACECRAFT_2D = 13,
 		SPACECRAFT_3D = 14,
+		HUMMINGBIRD = 16,
 	};
 
 	enum class FailureMode {
@@ -196,6 +199,9 @@ private:
 
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
+	matrix::Vector<float, 4> _hummingbird_motor_sp{};
+	matrix::Vector<float, 2> _hummingbird_beta_sp{};
+	matrix::Vector<float, 4> _hummingbird_alpha_sp{};
 	bool _publish_controls{true};
 
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
@@ -218,7 +224,8 @@ private:
 		(ParamInt<px4::params::CA_AIRFRAME>) _param_ca_airframe,
 		(ParamInt<px4::params::CA_METHOD>) _param_ca_method,
 		(ParamInt<px4::params::CA_FAILURE_MODE>) _param_ca_failure_mode,
-		(ParamInt<px4::params::CA_R_REV>) _param_r_rev
+		(ParamInt<px4::params::CA_R_REV>) _param_r_rev,
+		(ParamInt<px4::params::HB_CTRL_MODE>) _param_hb_ctrl_mode
 	)
 
 };

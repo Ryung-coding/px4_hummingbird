@@ -426,16 +426,75 @@ void MulticopterPositionControl::Run()
 
 		PositionControlStates states{set_vehicle_states(vehicle_local_position, dt)};
 
-		// If a goto setpoint is available this publishes a trajectory setpoint to go there
-		// If trajectory_setpoint is published elsewhere, do not use the goto setpoint
+		const bool hummingbird_airframe = _param_ca_airframe.get() == 16;
+		const bool hummingbird_fully_actuated_control_enabled = hummingbird_airframe && _param_hb_ctrl_mode.get() == 1;
+		const bool hummingbird_dds_command_enabled = hummingbird_airframe && _param_hb_cmd_source.get() == 1;
+		const bool hummingbird_attitude_command_enabled = hummingbird_fully_actuated_control_enabled && hummingbird_dds_command_enabled;
+
+		if (hummingbird_airframe && hrt_elapsed_time(&_last_hummingbird_status_pub) >= 100_ms) {
+			hummingbird_status_s status{};
+			status.timestamp = hrt_absolute_time();
+			status.hb_cmd_source = static_cast<uint8_t>(_param_hb_cmd_source.get());
+			status.hb_ctrl_mode = static_cast<uint8_t>(_param_hb_ctrl_mode.get());
+			status.hummingbird_airframe = hummingbird_airframe;
+			status.dds_command_enabled = hummingbird_dds_command_enabled;
+			status.fully_actuated_control_enabled = hummingbird_fully_actuated_control_enabled;
+			_hummingbird_status_pub.publish(status);
+			_last_hummingbird_status_pub = status.timestamp;
+		}
+
+		if (!hummingbird_attitude_command_enabled) {
+			_hummingbird_attitude_setpoint_time = 0;
+		}
+
+		trajectory_setpoint6dof_s hummingbird_setpoint{};
+		const bool trajectory_setpoint6dof_updated = hummingbird_dds_command_enabled
+							 && _trajectory_setpoint6dof_sub.update(&hummingbird_setpoint);
+		const bool trajectory_setpoint_updated = !trajectory_setpoint6dof_updated && _trajectory_setpoint_sub.updated();
+
+		// If a goto setpoint is available this publishes a trajectory setpoint to go there.
+		// If an external HummingBird 6DoF setpoint is published, do not use the goto setpoint.
 		const bool goto_setpoint_enable = _vehicle_control_mode.flag_multicopter_position_control_enabled
-						  && !_trajectory_setpoint_sub.updated();
+						  && !trajectory_setpoint_updated
+						  && !trajectory_setpoint6dof_updated;
 
 		if (_goto_control.checkForSetpoint(vehicle_local_position.timestamp_sample, goto_setpoint_enable)) {
 			_goto_control.update(dt, states.position, states.yaw);
 		}
 
-		_trajectory_setpoint_sub.update(&_setpoint);
+		if (trajectory_setpoint6dof_updated) {
+			_setpoint.timestamp = vehicle_local_position.timestamp_sample;
+
+			for (int i = 0; i < 3; ++i) {
+				_setpoint.position[i] = hummingbird_setpoint.position[i];
+				_setpoint.velocity[i] = hummingbird_setpoint.velocity[i];
+				_setpoint.acceleration[i] = hummingbird_setpoint.acceleration[i];
+				_setpoint.jerk[i] = hummingbird_setpoint.jerk[i];
+			}
+
+			_setpoint.yaw = 0.f;
+			_setpoint.yawspeed = 0.f;
+
+			if (hummingbird_attitude_command_enabled) {
+				const float q_norm_sq = hummingbird_setpoint.quaternion[0] * hummingbird_setpoint.quaternion[0]
+						+ hummingbird_setpoint.quaternion[1] * hummingbird_setpoint.quaternion[1]
+						+ hummingbird_setpoint.quaternion[2] * hummingbird_setpoint.quaternion[2]
+						+ hummingbird_setpoint.quaternion[3] * hummingbird_setpoint.quaternion[3];
+
+				if (PX4_ISFINITE(q_norm_sq) && q_norm_sq > 1.0e-6f) {
+					const float q_norm_inv = 1.f / sqrtf(q_norm_sq);
+					_hummingbird_attitude_setpoint = Quatf(
+							hummingbird_setpoint.quaternion[0] * q_norm_inv,
+							hummingbird_setpoint.quaternion[1] * q_norm_inv,
+							hummingbird_setpoint.quaternion[2] * q_norm_inv,
+							hummingbird_setpoint.quaternion[3] * q_norm_inv);
+					_hummingbird_attitude_setpoint_time = vehicle_local_position.timestamp_sample;
+				}
+			}
+
+		} else {
+			_trajectory_setpoint_sub.update(&_setpoint);
+		}
 
 		adjustSetpointForEKFResets(vehicle_local_position, _setpoint);
 
@@ -607,7 +666,27 @@ void MulticopterPositionControl::Run()
 
 			// Publish attitude setpoint output
 			vehicle_attitude_setpoint_s attitude_setpoint{};
-			_control.getAttitudeSetpoint(attitude_setpoint);
+
+			if (hummingbird_fully_actuated_control_enabled) {
+				vehicle_attitude_s vehicle_attitude{};
+
+				if (!_vehicle_attitude_sub.copy(&vehicle_attitude)
+				    || !PX4_ISFINITE(vehicle_attitude.q[0]) || !PX4_ISFINITE(vehicle_attitude.q[1])
+				    || !PX4_ISFINITE(vehicle_attitude.q[2]) || !PX4_ISFINITE(vehicle_attitude.q[3])) {
+					vehicle_attitude.q[0] = 1.f;
+					vehicle_attitude.q[1] = 0.f;
+					vehicle_attitude.q[2] = 0.f;
+					vehicle_attitude.q[3] = 0.f;
+				}
+
+				const Quatf *attitude_sp = (hrt_absolute_time() < _hummingbird_attitude_setpoint_time + 200_ms)
+							   ? &_hummingbird_attitude_setpoint : nullptr;
+				_control.getHummingBirdAttitudeSetpoint(attitude_setpoint, Quatf(vehicle_attitude.q), attitude_sp);
+
+			} else {
+				_control.getAttitudeSetpoint(attitude_setpoint);
+			}
+
 			attitude_setpoint.timestamp = hrt_absolute_time();
 			_vehicle_attitude_setpoint_pub.publish(attitude_setpoint);
 

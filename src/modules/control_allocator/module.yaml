@@ -33,6 +33,7 @@ parameters:
                 13: Rover (Mecanum)
                 14: Spacecraft 2D
                 15: Spacecraft 3D
+                16: HummingBird
             default: 0
 
         CA_METHOD:
@@ -47,6 +48,41 @@ parameters:
                 1: Pseudo-inverse with sequential desaturation technique
                 2: Automatic
             default: 2
+
+        HB_CTRL_MODE:
+            description:
+                short: HummingBird control mode
+                long: |
+                  Selects how the HummingBird airframe is controlled at runtime.
+
+                  Conventional mode keeps the standard underactuated multicopter
+                  position-to-attitude path and publishes motor controls with
+                  servo angles held at zero.
+
+                  Fully-actuated mode uses the HummingBird force/attitude path and
+                  publishes motor thrust plus beta/alpha servo angles.
+            type: enum
+            values:
+                0: Conventional
+                1: Fully-actuated
+            default: 0
+
+        HB_CMD_SOURCE:
+            description:
+                short: HummingBird command source
+                long: |
+                  Selects whether HummingBird receives commands through the normal
+                  PX4 RC/flight-task path or through the DDS 6DoF setpoint input.
+
+                  RC mode uses the normal PX4 trajectory setpoint path. DDS mode
+                  reads trajectory_setpoint6dof. In Conventional control mode it
+                  uses only position, velocity, and acceleration fields. In Fully-actuated
+                  control mode it also uses the quaternion attitude command.
+            type: enum
+            values:
+                0: RC
+                1: DDS
+            default: 0
 
         # Motor parameters
         CA_R_REV:
