@@ -33,7 +33,7 @@ public:
 
     last_dds_time_ = this->now();
 
-    dds_sub_ = this->create_subscription<px4_msgs::msg::ActuatorServos>("/fmu/out/actuator_servos", rclcpp::SensorDataQoS(), std::bind(&Px4ServoToDynamixel::dds_callback, this, std::placeholders::_1));
+    dds_sub_ = this->create_subscription<px4_msgs::msg::ActuatorServos>("/fmu/out/actuator_servos_v1", rclcpp::SensorDataQoS(), std::bind(&Px4ServoToDynamixel::dds_callback, this, std::placeholders::_1));
     timeout_timer_ = this->create_wall_timer(std::chrono::microseconds(params::SERVO_PERIOD_US), std::bind(&Px4ServoToDynamixel::timeout_callback, this));
 
     RCLCPP_INFO(this->get_logger(), "Dynamixel ready: port=%s, baud=%d", params::DXL_PORT_NAME, params::DXL_BAUDRATE);
@@ -316,9 +316,9 @@ private:
     {
       const auto & servo = params::DXL_SERVOS[i];
 
-      // ID 0~1: theta1~theta2 -> control[0~1]
-      // ID 2~5: phi1~phi4     -> control[4~7]
-      const std::size_t control_index = servo.id < 2 ? static_cast<std::size_t>(servo.id) : static_cast<std::size_t>(servo.id + 2);
+      // ID 0~1: beta_1~beta_2 -> control[0~1]
+      // ID 2~5: alpha_1~alpha_4 -> control[2~5]
+      const std::size_t control_index = i;
       const double normalized = std::isfinite(msg->control[control_index]) ? std::clamp(static_cast<double>(msg->control[control_index]), -1.0, 1.0) : 0.0;
       const double rad = normalized * servo.angle_limit_rad;
 

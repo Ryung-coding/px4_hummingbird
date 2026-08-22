@@ -13,7 +13,7 @@ def generate_launch_description():
     enable_dynamixel_servo = LaunchConfiguration("enable_dynamixel_servo")
 
     return LaunchDescription([
-        DeclareLaunchArgument("path", default_value="position_tuning"),
+        DeclareLaunchArgument("path", default_value="pos"),
         DeclareLaunchArgument("auto_offboard", default_value="false"),
         DeclareLaunchArgument("auto_arm", default_value="false"),
         DeclareLaunchArgument("enable_dynamixel_servo", default_value="false"),
