@@ -1,6 +1,6 @@
 # HummingBird command/control mode status
 
-uint32 MESSAGE_VERSION = 1
+uint32 MESSAGE_VERSION = 0
 
 uint64 timestamp # [us] Time since system start
 

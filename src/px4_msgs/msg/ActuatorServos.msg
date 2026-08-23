@@ -3,7 +3,7 @@
 # Normalised output setpoint for up to 6 servos.
 # Published by the vehicle's allocation and consumed by the actuator output drivers.
 
-uint32 MESSAGE_VERSION = 1
+uint32 MESSAGE_VERSION = 0
 
 uint64 timestamp         # [us] Time since system start
 uint64 timestamp_sample  # [us] Sampling timestamp of the data this control response is based on

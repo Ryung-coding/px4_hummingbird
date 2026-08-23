@@ -46,7 +46,7 @@ static constexpr double SERVO_TIMEOUT_SEC = 0.2;
 static constexpr double SERVO_RETURN_TIME_SEC = 5.0;
 static constexpr int SERVO_PERIOD_US = static_cast<int>(1000000.0 / RATE_HZ); // not tunable
 
-static constexpr char DXL_PORT_NAME[] = "/dev/dynamixel";
+static constexpr char DXL_PORT_NAME[] = "/dev/ttyUSB0"; //dynamixel
 
 static constexpr int DXL_BAUDRATE = 1000000;                // 1 Mbps setting
 static constexpr double STARTUP_RETURN_TIME_SEC = 2.0;
