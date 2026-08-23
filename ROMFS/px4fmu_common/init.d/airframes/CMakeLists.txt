@@ -105,6 +105,9 @@ if(CONFIG_MODULES_MC_RATE_CONTROL)
 
 		16001_helicopter
 
+		# [22000, 22999] Custom models
+		22022_hummingbird_x7pro
+
 		24001_dodeca_cox
 	)
 endif()

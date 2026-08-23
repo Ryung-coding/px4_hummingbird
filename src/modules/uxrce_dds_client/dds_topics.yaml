@@ -21,20 +21,20 @@ publications:
     rate_limit: 5.
 
   # Simulation/viewer-only diagnostics. Keep disabled for onboard use.
-  - topic: /fmu/out/actuator_motors
-    type: px4_msgs::msg::ActuatorMotors
-  - topic: /fmu/out/manual_control_setpoint
-    type: px4_msgs::msg::ManualControlSetpoint
-  - topic: /fmu/out/vehicle_local_position_setpoint
-    type: px4_msgs::msg::VehicleLocalPositionSetpoint
-  - topic: /fmu/out/vehicle_attitude
-    type: px4_msgs::msg::VehicleAttitude
-  - topic: /fmu/out/vehicle_attitude_setpoint
-    type: px4_msgs::msg::VehicleAttitudeSetpoint
-  - topic: /fmu/out/vehicle_thrust_setpoint
-    type: px4_msgs::msg::VehicleThrustSetpoint
-  - topic: /fmu/out/vehicle_torque_setpoint
-    type: px4_msgs::msg::VehicleTorqueSetpoint
+  # - topic: /fmu/out/actuator_motors
+  #   type: px4_msgs::msg::ActuatorMotors
+  # - topic: /fmu/out/manual_control_setpoint
+  #   type: px4_msgs::msg::ManualControlSetpoint
+  # - topic: /fmu/out/vehicle_local_position_setpoint
+  #   type: px4_msgs::msg::VehicleLocalPositionSetpoint
+  # - topic: /fmu/out/vehicle_attitude
+  #   type: px4_msgs::msg::VehicleAttitude
+  # - topic: /fmu/out/vehicle_attitude_setpoint
+  #   type: px4_msgs::msg::VehicleAttitudeSetpoint
+  # - topic: /fmu/out/vehicle_thrust_setpoint
+  #   type: px4_msgs::msg::VehicleThrustSetpoint
+  # - topic: /fmu/out/vehicle_torque_setpoint
+  #   type: px4_msgs::msg::VehicleTorqueSetpoint
   # - topic: /fmu/out/vehicle_command_ack
   #   type: px4_msgs::msg::VehicleCommandAck
 
