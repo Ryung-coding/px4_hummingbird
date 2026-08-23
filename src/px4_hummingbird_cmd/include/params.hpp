@@ -46,7 +46,7 @@ static constexpr double SERVO_TIMEOUT_SEC = 0.2;
 static constexpr double SERVO_RETURN_TIME_SEC = 5.0;
 static constexpr int SERVO_PERIOD_US = static_cast<int>(1000000.0 / RATE_HZ); // not tunable
 
-static constexpr char DXL_PORT_NAME[] = "/dev/ttyUSB0"; //dynamixel
+static constexpr char DXL_PORT_NAME[] = "/dev/dynamixel";
 
 static constexpr int DXL_BAUDRATE = 1000000;                // 1 Mbps setting
 static constexpr double STARTUP_RETURN_TIME_SEC = 2.0;
@@ -92,13 +92,14 @@ struct ServoConfig
 
   // control[0~1]: beta_1~beta_2
   // control[2~5]: alpha_1~alpha_4
+  // {DXL ID, dir, zero_PPR, min_PPR, max_PPR, angle_limit[rad], pos_P/I/D, vel_P/I}
 static constexpr std::array<ServoConfig, 6> DXL_SERVOS{{
-  {0, 1, 2048, 0, 4095, BETA_LIMIT_RAD,  1200, 0, 20, 150, 400},
-  {1, -1, 2048, 0, 4095, BETA_LIMIT_RAD, 1200, 0, 20, 150, 400},
-  {2, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD,  800, 0,  0, 100, 300},
-  {3, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD,  800, 0,  0, 100, 300},
-  {4, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD,  800, 0,  0, 100, 300},
-  {5, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD,  800, 0,  0, 100, 300}
+  {0, 1, 2048, 0, 4095, BETA_LIMIT_RAD,  1400, 0, 20, 150, 400},
+  {1, -1, 2048, 0, 4095, BETA_LIMIT_RAD, 1400, 0, 20, 150, 400},
+  {2, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD, 1350, 0, 20, 120, 300},
+  {3, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD, 1350, 0, 20, 120, 300},
+  {4, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD, 1350, 0, 20, 120, 300},
+  {5, 1, 2048, 0, 4095, ALPHA_LIMIT_RAD, 1350, 0, 20, 120, 300}
 }};
 
 }  // namespace params
