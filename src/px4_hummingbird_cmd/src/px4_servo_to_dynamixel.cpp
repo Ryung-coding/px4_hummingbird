@@ -33,8 +33,10 @@ public:
 
     last_dds_time_ = this->now();
 
+    measured_pub_ = this->create_publisher<px4_msgs::msg::ActuatorServos>("/dynamixel_tilt_mea", rclcpp::SensorDataQoS());
     dds_sub_ = this->create_subscription<px4_msgs::msg::ActuatorServos>("/fmu/out/actuator_servos", rclcpp::SensorDataQoS(), std::bind(&Px4ServoToDynamixel::dds_callback, this, std::placeholders::_1));
     timeout_timer_ = this->create_wall_timer(std::chrono::microseconds(params::SERVO_PERIOD_US), std::bind(&Px4ServoToDynamixel::timeout_callback, this));
+    measured_timer_ = this->create_wall_timer(std::chrono::milliseconds(20), std::bind(&Px4ServoToDynamixel::measured_callback, this));
 
     RCLCPP_INFO(this->get_logger(), "Dynamixel ready: port=%s, baud=%d", params::DXL_PORT_NAME, params::DXL_BAUDRATE);
   }
@@ -42,6 +44,7 @@ public:
 ~Px4ServoToDynamixel() override
 {
   if (timeout_timer_) timeout_timer_->cancel();
+  if (measured_timer_) measured_timer_->cancel();
 
   dds_sub_.reset();
 
@@ -50,6 +53,7 @@ public:
   if (torque_off_all()) RCLCPP_INFO(this->get_logger(), "Final zero sent. Torque disabled.");
   else RCLCPP_ERROR(this->get_logger(), "Final zero sent, but torque off failed.");
 
+  sync_read_.reset();
   sync_write_.reset();
 
   if (port_handler_) port_handler_->closePort();
@@ -82,6 +86,12 @@ private:
     if (!port_opened) return false;
 
     sync_write_ = std::make_unique<dynamixel::GroupSyncWrite>(port_handler_, packet_handler_, params::ADDR_GOAL_POSITION, 4);
+    sync_read_ = std::make_unique<dynamixel::GroupSyncRead>(port_handler_, packet_handler_, params::ADDR_PRESENT_POSITION, 4);
+
+    for (const auto & servo : params::DXL_SERVOS)
+    {
+      if (!sync_read_->addParam(servo.id)) return false;
+    }
 
     auto write_1byte = [&](uint8_t id, uint16_t address, uint8_t value)
     {
@@ -337,6 +347,48 @@ private:
     timeout_zero_sent_ = false;
   }
 
+  void measured_callback()
+  {
+    if (emergency_active_) return;
+    publish_measured();
+  }
+
+  bool publish_measured()
+  {
+    if (!sync_read_ || !measured_pub_) return false;
+
+    const int result = sync_read_->txRxPacket();
+
+    if (result != COMM_SUCCESS)
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Dynamixel measured position read failed");
+      return false;
+    }
+
+    px4_msgs::msg::ActuatorServos msg{};
+    msg.timestamp = static_cast<uint64_t>(this->now().nanoseconds() / 1000);
+    msg.timestamp_sample = msg.timestamp;
+
+    for (std::size_t i = 0; i < params::DXL_SERVOS.size(); ++i)
+    {
+      const auto & servo = params::DXL_SERVOS[i];
+
+      if (!sync_read_->isAvailable(servo.id, params::ADDR_PRESENT_POSITION, 4))
+      {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Dynamixel measured position unavailable: ID=%u", static_cast<unsigned>(servo.id));
+        return false;
+      }
+
+      const int32_t present_ppr = static_cast<int32_t>(sync_read_->getData(servo.id, params::ADDR_PRESENT_POSITION, 4));
+      const double rad = servo.direction * (static_cast<double>(present_ppr) - servo.zero_ppr) / params::PPR_PER_RAD;
+
+      msg.control[i] = static_cast<float>(std::clamp(rad / servo.angle_limit_rad, -1.0, 1.0));
+    }
+
+    measured_pub_->publish(msg);
+    return true;
+  }
+
   void timeout_callback()
   {
     if (emergency_active_ || !dds_received_ || timeout_zero_sent_) return;
@@ -410,11 +462,14 @@ private:
   dynamixel::PortHandler * port_handler_ = nullptr;
   dynamixel::PacketHandler * packet_handler_ = nullptr;
   std::unique_ptr<dynamixel::GroupSyncWrite> sync_write_;
+  std::unique_ptr<dynamixel::GroupSyncRead> sync_read_;
 
   std::array<utils::LPF, params::DXL_SERVOS.size()> startup_lpf_;
 
+  rclcpp::Publisher<px4_msgs::msg::ActuatorServos>::SharedPtr measured_pub_;
   rclcpp::Subscription<px4_msgs::msg::ActuatorServos>::SharedPtr dds_sub_;
   rclcpp::TimerBase::SharedPtr timeout_timer_;
+  rclcpp::TimerBase::SharedPtr measured_timer_;
   rclcpp::Time last_dds_time_;
 
   bool dds_received_ = false;

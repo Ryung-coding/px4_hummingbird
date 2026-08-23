@@ -101,31 +101,29 @@ class Px4ViewerNode(Node):
         self.last_motor_controls = np.zeros(4, dtype=np.float64)
         self.last_motor_forces = np.zeros(4, dtype=np.float64)
         self.last_servo_controls = np.zeros(6, dtype=np.float64)
+        self.last_dynamixel_controls = np.full(6, np.nan, dtype=np.float64)
         self.last_manual = np.zeros(4, dtype=np.float64)
         self.last_manual_valid = False
         self.last_manual_source = 0
         self.last_sticks_moving = False
-        self.last_status = "HB cmd: ?  ctrl: ?  dds: ?  hb: ?"
 
-        self.max_pos_err_abs = np.zeros(3, dtype=np.float64)
-        self.max_att_err_abs = np.zeros(3, dtype=np.float64)
-        self.max_pos_err_norm = 0.0
-        self.max_att_err_norm = 0.0
-        self.max_pos_err_time = 0.0
-        self.max_att_err_time = 0.0
+        # Hummingbird status indicators used by the top status bar.
+        self.last_hb_cmd_source = -1
+        self.last_hb_ctrl_mode = -1
+        self.last_dds_enabled = False
+        self.last_hb_enabled = False
 
         self.buf_pos = Ring(MAX_SAMPLES, 4)
         self.buf_pos_sp = Ring(MAX_SAMPLES, 4)
-        self.buf_pos_err = Ring(MAX_SAMPLES, 4)
         self.buf_rpy = Ring(MAX_SAMPLES, 4)
         self.buf_att_sp = Ring(MAX_SAMPLES, 4)
-        self.buf_att_err = Ring(MAX_SAMPLES, 4)
         self.buf_force = Ring(MAX_SAMPLES, 4)
         self.buf_torque = Ring(MAX_SAMPLES, 4)
         self.buf_motor = Ring(MAX_SAMPLES, 5)
         self.buf_beta = Ring(MAX_SAMPLES, 3)
         self.buf_alpha = Ring(MAX_SAMPLES, 5)
-        self.buf_thrust_body = Ring(MAX_SAMPLES, 4)
+        self.buf_dynamixel_beta = Ring(MAX_SAMPLES, 3)
+        self.buf_dynamixel_alpha = Ring(MAX_SAMPLES, 5)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -143,6 +141,7 @@ class Px4ViewerNode(Node):
         self.create_subscription(ManualControlSetpoint, "/fmu/out/manual_control_setpoint", self._cb_manual, qos)
         self.create_subscription(ActuatorMotors, "/fmu/out/actuator_motors", self._cb_motors, qos)
         self.create_subscription(ActuatorServos, "/fmu/out/actuator_servos", self._cb_servos, qos)
+        self.create_subscription(ActuatorServos, "/dynamixel_tilt_mea", self._cb_dynamixel_servos, qos)
         self.create_subscription(HummingbirdStatus, "/fmu/out/hummingbird_status", self._cb_status, qos)
 
     def _t(self):
@@ -151,16 +150,8 @@ class Px4ViewerNode(Node):
     def _cb_pos(self, msg):
         t = self._t()
         pos = np.array([msg.x, msg.y, msg.z], dtype=np.float64)
-        err = self.last_pos_sp - pos
-        err_abs = np.abs(err)
-        err_norm = np.linalg.norm(err)
         with self.lock:
-            self.max_pos_err_abs = np.maximum(self.max_pos_err_abs, err_abs)
-            if err_norm > self.max_pos_err_norm:
-                self.max_pos_err_norm = err_norm
-                self.max_pos_err_time = t
             self.buf_pos.push([t, pos[0], pos[1], pos[2]])
-            self.buf_pos_err.push([t, err[0], err[1], err[2]])
 
     def _cb_pos_sp(self, msg):
         t = self._t()
@@ -171,28 +162,14 @@ class Px4ViewerNode(Node):
     def _cb_att(self, msg):
         t = self._t()
         rpy = quat_to_rpy_deg(msg.q)
-        err = np.array([
-            wrap_deg(self.last_att_sp_deg[0] - rpy[0]),
-            wrap_deg(self.last_att_sp_deg[1] - rpy[1]),
-            wrap_deg(self.last_att_sp_deg[2] - rpy[2]),
-        ], dtype=np.float64)
-        err_abs = np.abs(err)
-        err_norm = np.linalg.norm(err)
         with self.lock:
-            self.max_att_err_abs = np.maximum(self.max_att_err_abs, err_abs)
-            if err_norm > self.max_att_err_norm:
-                self.max_att_err_norm = err_norm
-                self.max_att_err_time = t
             self.buf_rpy.push([t, rpy[0], rpy[1], rpy[2]])
-            self.buf_att_err.push([t, err[0], err[1], err[2]])
 
     def _cb_att_sp(self, msg):
         t = self._t()
         self.last_att_sp_deg = quat_to_rpy_deg(msg.q_d)
-        thrust_body = np.array(msg.thrust_body, dtype=np.float64)
         with self.lock:
             self.buf_att_sp.push([t, self.last_att_sp_deg[0], self.last_att_sp_deg[1], self.last_att_sp_deg[2]])
-            self.buf_thrust_body.push([t, thrust_body[0], thrust_body[1], thrust_body[2]])
 
     def _cb_thrust(self, msg):
         t = self._t()
@@ -233,6 +210,16 @@ class Px4ViewerNode(Node):
             self.buf_beta.push([t, beta[0], beta[1]])
             self.buf_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
 
+    def _cb_dynamixel_servos(self, msg):
+        t = self._t()
+        controls = finite_n(msg.control, 6)
+        beta = finite_n(msg.control[0:2], 2) * self.beta_limit_rad * RAD2DEG
+        alpha = finite_n(msg.control[2:6], 4) * self.alpha_limit_rad * RAD2DEG
+        with self.lock:
+            self.last_dynamixel_controls = controls
+            self.buf_dynamixel_beta.push([t, beta[0], beta[1]])
+            self.buf_dynamixel_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
+
     def _cb_status(self, msg):
         hb_enabled = getattr(
             msg,
@@ -240,22 +227,26 @@ class Px4ViewerNode(Node):
             getattr(msg, "fully_actuated_control_enabled", False),
         )
         with self.lock:
-            self.last_status = (
-                f"HB cmd: {msg.hb_cmd_source}  ctrl: {msg.hb_ctrl_mode}  "
-                f"dds: {int(msg.dds_command_enabled)}  hb: {int(hb_enabled)}"
-            )
+            self.last_hb_cmd_source = int(msg.hb_cmd_source)
+            self.last_hb_ctrl_mode = int(msg.hb_ctrl_mode)
+            self.last_dds_enabled = bool(msg.dds_command_enabled)
+            self.last_hb_enabled = bool(hb_enabled)
 
 
-def _pen(color, width=2):
+def _pen(color, width=3):
     return pg.mkPen(color=color, width=width, style=QtCore.Qt.SolidLine)
 
 
-def _cmd_pen(width=2):
+def _cmd_pen(width=3):
     return pg.mkPen(color="k", width=width, style=QtCore.Qt.DashLine)
 
 
-def _mkplot(glw, row, col, title, ylabel):
-    plot = glw.addPlot(row=row, col=col, title=title)
+def _mea_pen(color, width=3):
+    return pg.mkPen(color=color, width=width, style=QtCore.Qt.DashLine)
+
+
+def _mkplot(glw, row, col, title, ylabel, rowspan=1, colspan=1):
+    plot = glw.addPlot(row=row, col=col, rowspan=rowspan, colspan=colspan, title=title)
     plot.showGrid(x=True, y=True, alpha=0.3)
     plot.setLabel("left", ylabel)
     plot.getAxis("left").enableAutoSIPrefix(False)
@@ -272,6 +263,7 @@ def _front(curve):
     return curve
 
 
+
 class ViewerWindow(QtWidgets.QMainWindow):
     def __init__(self, node):
         super().__init__()
@@ -279,8 +271,40 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("PX4 HummingBird DDS Viewer")
         self.resize(1800, 1050)
 
+        # Top-level layout: status indicators + tabs.
+        central = QtWidgets.QWidget()
+        root = QtWidgets.QVBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+        self.setCentralWidget(central)
+
+        self.status_widget = QtWidgets.QWidget()
+        status_layout = QtWidgets.QHBoxLayout(self.status_widget)
+        status_layout.setContentsMargins(6, 2, 6, 2)
+        status_layout.setSpacing(10)
+
+        title = QtWidgets.QLabel("HummingBird Status")
+        title.setStyleSheet("font-size: 15pt; font-weight: 700; color: #111;")
+        status_layout.addWidget(title)
+
+        self.badge_hb = QtWidgets.QLabel()
+        self.badge_dds = QtWidgets.QLabel()
+        self.badge_manual = QtWidgets.QLabel()
+        self.badge_cmd = QtWidgets.QLabel()
+        self.badge_ctrl = QtWidgets.QLabel()
+
+        for badge in (self.badge_hb, self.badge_dds, self.badge_manual, self.badge_cmd, self.badge_ctrl):
+            badge.setAlignment(QtCore.Qt.AlignCenter)
+            badge.setMinimumWidth(125)
+            badge.setMinimumHeight(32)
+            status_layout.addWidget(badge)
+
+        status_layout.addStretch(1)
+        root.addWidget(self.status_widget)
+
         tabs = QtWidgets.QTabWidget()
-        self.setCentralWidget(tabs)
+        root.addWidget(tabs, 1)
+
         self.state_glw = pg.GraphicsLayoutWidget()
         self.act_glw = pg.GraphicsLayoutWidget()
         tabs.addTab(self.state_glw, "State")
@@ -296,122 +320,121 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.timer.timeout.connect(self._update)
         self.timer.start(UPDATE_MS)
 
+    @staticmethod
+    def _set_bool_badge(label, name, enabled):
+        bg = "#2e7d32" if enabled else "#c62828"
+        state = "ON" if enabled else "OFF"
+        label.setText(f"{name}: {state}")
+        label.setStyleSheet(
+            f"background:{bg}; color:white; border-radius:6px; "
+            "padding:5px 10px; font-size:12pt; font-weight:700;"
+        )
+
+    @staticmethod
+    def _set_value_badge(label, name, value):
+        label.setText(f"{name}: {value}")
+        label.setStyleSheet(
+            "background:#424242; color:white; border-radius:6px; "
+            "padding:5px 10px; font-size:12pt; font-weight:700;"
+        )
+
+    def _update_status_bar(self):
+        nd = self.node
+        with nd.lock:
+            hb = nd.last_hb_enabled
+            dds = nd.last_dds_enabled
+            manual = nd.last_manual_valid
+            cmd = nd.last_hb_cmd_source
+            ctrl = nd.last_hb_ctrl_mode
+
+        self._set_bool_badge(self.badge_hb, "HB", hb)
+        self._set_bool_badge(self.badge_dds, "DDS", dds)
+        self._set_bool_badge(self.badge_manual, "MANUAL", manual)
+        self._set_value_badge(self.badge_cmd, "CMD SRC", cmd)
+        self._set_value_badge(self.badge_ctrl, "CTRL MODE", ctrl)
+
     def _build_state_tab(self):
         pos_lbl = ["x", "y", "z"]
         rpy_lbl = ["roll", "pitch", "yaw"]
-        frc_lbl = ["Tx", "Ty", "Tz"]
         trq_lbl = ["Mx", "My", "Mz"]
+        frc_lbl = ["Fx", "Fy", "Fz"]
 
+        # Row 0: position + setpoint
         for i in range(3):
             p = _mkplot(self.state_glw, 0, i, f"{pos_lbl[i]} / sp", f"{pos_lbl[i]} [m]")
             self.cv[f"pos{i}"] = p.plot(pen=_pen(C3[i]), name=pos_lbl[i])
             self.cv[f"pos_sp{i}"] = _front(p.plot(pen=_cmd_pen(), name="sp"))
             self.state_plots.append(p)
+
+        # Row 1: attitude + setpoint
         for i in range(3):
-            p = _mkplot(self.state_glw, 1, i, f"{pos_lbl[i]} error", "err [m]")
-            self.cv[f"pos_err{i}"] = p.plot(pen=_pen(C3[i]), name="err")
-            self.state_plots.append(p)
-        for i in range(3):
-            p = _mkplot(self.state_glw, 2, i, frc_lbl[i], "norm")
-            self.cv[f"force{i}"] = p.plot(pen=_pen(C3[i]), name=frc_lbl[i])
-            self.state_plots.append(p)
-        for i in range(3):
-            p = _mkplot(self.state_glw, 3, i, f"{rpy_lbl[i]} / sp", f"{rpy_lbl[i]} [deg]")
+            p = _mkplot(self.state_glw, 1, i, f"{rpy_lbl[i]} / sp", f"{rpy_lbl[i]} [deg]")
             self.cv[f"rpy{i}"] = p.plot(pen=_pen(C3[i]), name=rpy_lbl[i])
             self.cv[f"att_sp{i}"] = _front(p.plot(pen=_cmd_pen(), name="sp"))
             self.state_plots.append(p)
+
+        # Row 2: body moment
         for i in range(3):
-            p = _mkplot(self.state_glw, 4, i, f"{rpy_lbl[i]} error", "err [deg]")
-            self.cv[f"att_err{i}"] = p.plot(pen=_pen(C3[i]), name="err")
-            self.state_plots.append(p)
-        for i in range(3):
-            p = _mkplot(self.state_glw, 5, i, trq_lbl[i], "norm")
+            p = _mkplot(self.state_glw, 2, i, trq_lbl[i], "norm")
             self.cv[f"torque{i}"] = p.plot(pen=_pen(C3[i]), name=trq_lbl[i])
+            self.state_plots.append(p)
+
+        # Row 3: body translational thrust
+        for i in range(3):
+            p = _mkplot(self.state_glw, 3, i, f"Body thrust {frc_lbl[i]}", "norm")
+            self.cv[f"force{i}"] = p.plot(pen=_pen(C3[i]), name=frc_lbl[i])
             self.state_plots.append(p)
 
         for p in self.state_plots[1:]:
             p.setXLink(self.state_plots[0])
+
         for p in self.state_plots:
             p.hideAxis("bottom")
+
         for p in self.state_plots[-3:]:
             p.showAxis("bottom")
             p.setLabel("bottom", "time [s]")
 
+    def _add_angle_plot(self, row, col, title, cmd_key, mea_key, color, y_min, y_max):
+        p = _mkplot(self.act_glw, row, col, title, "angle [deg]")
+        self.cv[cmd_key] = p.plot(pen=_pen(color), name="cmd")
+        self.cv[mea_key] = _front(p.plot(pen=_mea_pen(color), name="mea"))
+        p.setYRange(y_min, y_max, padding=0.03)
+        self.act_plots.append(p)
+        return p
+
     def _build_act_tab(self):
+        # 7 plots total:
+        # beta1, beta2, alpha1~alpha4, and one combined f1~f4 plot.
+        self._add_angle_plot(0, 0, "beta1: cmd / mea", "beta0", "dxl_beta0", C_R, -190.0, 190.0)
+        self._add_angle_plot(0, 1, "beta2: cmd / mea", "beta1", "dxl_beta1", C_G, -190.0, 190.0)
+
+        p_force = _mkplot(self.act_glw, 0, 2, "Rotor thrust f1-f4", "force [N]", colspan=2)
         for i, color in enumerate(C4):
-            p = _mkplot(self.act_glw, 0, i, f"f{i + 1}", "force [N]")
-            self.cv[f"motor{i}"] = p.plot(pen=_pen(color), name=f"f{i + 1}")
-            self.act_plots.append(p)
-        for i, color in enumerate(C4[:2]):
-            p = _mkplot(self.act_glw, 1, i, f"beta{i + 1}", "beta [deg]")
-            self.cv[f"beta{i}"] = p.plot(pen=_pen(color), name=f"beta{i + 1}")
-            self.act_plots.append(p)
+            self.cv[f"motor_all{i}"] = p_force.plot(pen=_pen(color), name=f"f{i + 1}")
+        self.act_plots.append(p_force)
+
         for i, color in enumerate(C4):
-            p = _mkplot(self.act_glw, 2, i, f"alpha{i + 1}", "alpha [deg]")
-            self.cv[f"alpha{i}"] = p.plot(pen=_pen(color), name=f"alpha{i + 1}")
-            self.act_plots.append(p)
-
-        p_all = _mkplot(self.act_glw, 3, 0, "f1-f4", "force [N]")
-        for i, color in enumerate(C4):
-            self.cv[f"motor_all{i}"] = p_all.plot(pen=_pen(color), name=f"f{i + 1}")
-        self.act_plots.append(p_all)
-
-        p_beta = _mkplot(self.act_glw, 3, 1, "beta1-beta2", "beta [deg]")
-        for i, color in enumerate(C4[:2]):
-            self.cv[f"beta_all{i}"] = p_beta.plot(pen=_pen(color), name=f"beta{i + 1}")
-        self.act_plots.append(p_beta)
-
-        p_alpha = _mkplot(self.act_glw, 3, 2, "alpha1-alpha4", "alpha [deg]")
-        for i, color in enumerate(C4):
-            self.cv[f"alpha_all{i}"] = p_alpha.plot(pen=_pen(color), name=f"alpha{i + 1}")
-        self.act_plots.append(p_alpha)
-
-        p_tb = _mkplot(self.act_glw, 3, 3, "thrust_body", "norm")
-        for i, color in enumerate(C3):
-            self.cv[f"tb{i}"] = p_tb.plot(pen=_pen(color), name=["x", "y", "z"][i])
-        self.act_plots.append(p_tb)
-
-        self.max_label = pg.LabelItem(justify="left")
-        self.act_glw.addItem(self.max_label, row=4, col=0, colspan=4)
+            self._add_angle_plot(
+                1, i,
+                f"alpha{i + 1}: cmd / mea",
+                f"alpha{i}",
+                f"dxl_alpha{i}",
+                color,
+                -35.0,
+                35.0,
+            )
 
         for p in self.act_plots[1:]:
             p.setXLink(self.act_plots[0])
+
         for p in self.act_plots:
             p.hideAxis("bottom")
+
+        # Bottom row (alpha1~alpha4) gets the time axis.
         for p in self.act_plots[-4:]:
             p.showAxis("bottom")
             p.setLabel("bottom", "time [s]")
-
-    def _update_label(self):
-        nd = self.node
-        with nd.lock:
-            pos = nd.max_pos_err_abs.copy()
-            att = nd.max_att_err_abs.copy()
-            pos_n = nd.max_pos_err_norm
-            att_n = nd.max_att_err_norm
-            pos_t = nd.max_pos_err_time
-            att_t = nd.max_att_err_time
-            status = nd.last_status
-            motor = nd.last_motor_controls.copy()
-            force = nd.last_motor_forces.copy()
-            servo = nd.last_servo_controls.copy()
-            manual = nd.last_manual.copy()
-            manual_valid = nd.last_manual_valid
-            manual_source = nd.last_manual_source
-            sticks_moving = nd.last_sticks_moving
-        self.max_label.setText(
-            "<div style='font-size:13pt; color:#111;'>"
-            f"<b>{status}</b><br>"
-            f"manual: valid {int(manual_valid)}, source {manual_source}, moving {int(sticks_moving)}, "
-            f"r/p/y/t [{manual[0]:.3f}, {manual[1]:.3f}, {manual[2]:.3f}, {manual[3]:.3f}]<br>"
-            f"pos err max [m]: x {pos[0]:.3f}, y {pos[1]:.3f}, z {pos[2]:.3f}, norm {pos_n:.3f} @ {pos_t:.2f}s<br>"
-            f"att err max [deg]: roll {att[0]:.2f}, pitch {att[1]:.2f}, yaw {att[2]:.2f}, norm {att_n:.2f} @ {att_t:.2f}s<br>"
-            f"actuator_servos raw: beta [{servo[0]:.3f}, {servo[1]:.3f}] "
-            f"alpha [{servo[2]:.3f}, {servo[3]:.3f}, {servo[4]:.3f}, {servo[5]:.3f}]<br>"
-            f"actuator_motors raw: [{motor[0]:.3f}, {motor[1]:.3f}, {motor[2]:.3f}, {motor[3]:.3f}]  "
-            f"force [N]: [{force[0]:.2f}, {force[1]:.2f}, {force[2]:.2f}, {force[3]:.2f}]"
-            "</div>"
-        )
 
     def _update(self):
         nd = self.node
@@ -419,24 +442,27 @@ class ViewerWindow(QtWidgets.QMainWindow):
             data = {
                 "pos": nd.buf_pos.get(),
                 "pos_sp": nd.buf_pos_sp.get(),
-                "pos_err": nd.buf_pos_err.get(),
                 "rpy": nd.buf_rpy.get(),
                 "att_sp": nd.buf_att_sp.get(),
-                "att_err": nd.buf_att_err.get(),
                 "force": nd.buf_force.get(),
                 "torque": nd.buf_torque.get(),
                 "motor": nd.buf_motor.get(),
                 "beta": nd.buf_beta.get(),
                 "alpha": nd.buf_alpha.get(),
-                "tb": nd.buf_thrust_body.get(),
+                "dxl_beta": nd.buf_dynamixel_beta.get(),
+                "dxl_alpha": nd.buf_dynamixel_alpha.get(),
             }
 
         tn = 0.0
         for arr in data.values():
             if arr.shape[0]:
                 tn = max(tn, arr[-1, 0])
+
+        self._update_status_bar()
+
         if tn <= 0.0:
             return
+
         tl = tn - WINDOW_SEC
 
         def trim(arr):
@@ -445,26 +471,25 @@ class ViewerWindow(QtWidgets.QMainWindow):
         for key in data:
             data[key] = trim(data[key])
 
+        # State tab
         for i in range(3):
             self._set3(data["pos"], f"pos{i}", i)
             self._set3(data["pos_sp"], f"pos_sp{i}", i)
-            self._set3(data["pos_err"], f"pos_err{i}", i)
             self._set3(data["rpy"], f"rpy{i}", i)
             self._set3(data["att_sp"], f"att_sp{i}", i)
-            self._set3(data["att_err"], f"att_err{i}", i)
             self._set3(data["force"], f"force{i}", i)
             self._set3(data["torque"], f"torque{i}", i)
-            self._set3(data["tb"], f"tb{i}", i)
+
+        # Actuator tab: six servo angles (cmd + measured) and combined rotor thrust.
         for i in range(4):
-            self._set4(data["motor"], f"motor{i}", i)
             self._set4(data["motor"], f"motor_all{i}", i)
             self._set4(data["alpha"], f"alpha{i}", i)
-            self._set4(data["alpha"], f"alpha_all{i}", i)
+            self._set4(data["dxl_alpha"], f"dxl_alpha{i}", i)
+
         for i in range(2):
             self._set3(data["beta"], f"beta{i}", i)
-            self._set3(data["beta"], f"beta_all{i}", i)
+            self._set3(data["dxl_beta"], f"dxl_beta{i}", i)
 
-        self._update_label()
         if self.state_plots:
             self.state_plots[0].setXRange(tl, tn, padding=0)
         if self.act_plots:

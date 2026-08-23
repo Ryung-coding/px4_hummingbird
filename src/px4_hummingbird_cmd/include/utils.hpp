@@ -216,7 +216,7 @@ inline TargetCMD stepAttPath(double t)
   static constexpr double SWITCH_DEG = 60.0;
   static constexpr double FIRST_STEP_DEG = 10.0;
   static constexpr double SECOND_STEP_DEG = 1.0;
-  static constexpr double MAX_DEG = 90.0;
+  static constexpr double MAX_DEG = 80.0;
   static constexpr double DEG2RAD = M_PI / 180.0;
 
   static constexpr int FIRST_STAGE_COUNT = static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
