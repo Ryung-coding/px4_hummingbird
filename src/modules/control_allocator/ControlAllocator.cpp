@@ -72,6 +72,24 @@ struct HummingBirdAllocationOutput
 	matrix::Vector<float, 4> alpha{};
 };
 
+matrix::Vector3f hummingbird_thrust_direction(float beta, float alpha)
+{
+	return {
+		-sinf(beta) * cosf(alpha),
+		sinf(alpha),
+		-cosf(beta) * cosf(alpha)
+	};
+}
+
+matrix::Vector3f hummingbird_beta_offset(float beta)
+{
+	return {
+		kHummingBirdLz * sinf(beta),
+		0.0f,
+		kHummingBirdLz * cosf(beta)
+	};
+}
+
 HummingBirdAllocationOutput allocation_P2T2_renewal(const matrix::Vector3f &moment_cmd, const matrix::Vector3f &force_cmd)
 {
 	using Matrix44f = matrix::Matrix<float, 4, 4>;
@@ -92,16 +110,14 @@ HummingBirdAllocationOutput allocation_P2T2_renewal(const matrix::Vector3f &mome
 	const float alpha_common = math::constrain(asinf(math::constrain(common_dir(1), -1.0f, 1.0f)),
 						-kHummingBirdAlphaLimitRad, kHummingBirdAlphaLimitRad);
 
-	matrix::Vector3f e_cmd{};
-	e_cmd(0) = -sinf(beta_common) * cosf(alpha_common);
-	e_cmd(1) = sinf(alpha_common);
-	e_cmd(2) = -cosf(beta_common) * cosf(alpha_common);
+	const float beta_for_rotor[4] = {beta_common, beta_common, beta_common, beta_common};
+	const float alpha_for_rotor[4] = {alpha_common, alpha_common, alpha_common, alpha_common};
 
-	const matrix::Vector3f rotor_pos[4] = {
-		{kHummingBirdLx,  kHummingBirdLy, kHummingBirdLz},
-		{-kHummingBirdLx, kHummingBirdLy, kHummingBirdLz},
-		{-kHummingBirdLx, -kHummingBirdLy, kHummingBirdLz},
-		{kHummingBirdLx, -kHummingBirdLy, kHummingBirdLz},
+	const matrix::Vector3f rotor_origin[4] = {
+		{kHummingBirdLx,  kHummingBirdLy, 0.0f},
+		{-kHummingBirdLx, kHummingBirdLy, 0.0f},
+		{-kHummingBirdLx, -kHummingBirdLy, 0.0f},
+		{kHummingBirdLx, -kHummingBirdLy, 0.0f},
 	};
 
 	const float spin[4] = {1.0f, -1.0f, 1.0f, -1.0f};
@@ -109,7 +125,9 @@ HummingBirdAllocationOutput allocation_P2T2_renewal(const matrix::Vector3f &mome
 	Matrix44f B{};
 
 	for (int i = 0; i < 4; ++i) {
-		const matrix::Vector3f moment_per_newton = rotor_pos[i].cross(e_cmd) - spin[i] * kHummingBirdZeta * e_cmd;
+		const matrix::Vector3f e_cmd = hummingbird_thrust_direction(beta_for_rotor[i], alpha_for_rotor[i]);
+		const matrix::Vector3f rotor_pos = rotor_origin[i] + hummingbird_beta_offset(beta_for_rotor[i]);
+		const matrix::Vector3f moment_per_newton = rotor_pos.cross(e_cmd) - spin[i] * kHummingBirdZeta * e_cmd;
 		B(0, i) = moment_per_newton(0);
 		B(1, i) = moment_per_newton(1);
 		B(2, i) = moment_per_newton(2);

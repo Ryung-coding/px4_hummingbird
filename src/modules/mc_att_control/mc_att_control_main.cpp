@@ -53,6 +53,12 @@
 
 using namespace matrix;
 
+namespace
+{
+constexpr int kHummingBirdAirframe = 16;
+constexpr int kHummingBirdFullyActuatedMode = 1;
+}
+
 MulticopterAttitudeControl::MulticopterAttitudeControl(bool vtol) :
 	ModuleParams(nullptr),
 	WorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers),
@@ -202,6 +208,53 @@ MulticopterAttitudeControl::generate_attitude_setpoint(const Quatf &q, float dt)
 }
 
 void
+MulticopterAttitudeControl::generate_hummingbird_stabilized_setpoint(const Quatf &q, float dt)
+{
+	vehicle_attitude_setpoint_s attitude_setpoint{};
+
+	const bool arming_gesture = (_manual_control_setpoint.throttle < -.9f) && (_param_mc_airmode.get() != 2);
+
+	if (arming_gesture || !_heading_good_for_control) {
+		_yaw_setpoint_stabilized = NAN;
+	}
+
+	const float yaw = Eulerf(q).psi();
+	const float yaw_stick_input = math::expo_deadzone(_manual_control_setpoint.yaw, .6f, _param_man_deadzone.get());
+	_stick_yaw.generateYawSetpoint(attitude_setpoint.yaw_sp_move_rate, _yaw_setpoint_stabilized, yaw_stick_input, yaw, dt,
+				       _unaided_heading);
+
+	const float yaw_setpoint = PX4_ISFINITE(_yaw_setpoint_stabilized) ? _yaw_setpoint_stabilized : yaw;
+	const Quatf q_sp_yaw(cosf(yaw_setpoint / 2.f), 0.f, 0.f, sinf(yaw_setpoint / 2.f));
+	q_sp_yaw.copyTo(attitude_setpoint.q_d);
+
+	const float thrust_z = -throttle_curve(_manual_control_setpoint.throttle);
+	const float lateral_thrust_limit = fabsf(thrust_z) * tanf(20.f * M_PI_F / 180.f);
+
+	_man_roll_input_filter.setParameters(dt, _param_mc_man_tilt_tau.get());
+	_man_pitch_input_filter.setParameters(dt, _param_mc_man_tilt_tau.get());
+
+	Vector2f lateral_thrust{
+		_man_pitch_input_filter.update(_manual_control_setpoint.pitch),
+		_man_roll_input_filter.update(_manual_control_setpoint.roll)
+	};
+
+	const float lateral_norm = lateral_thrust.norm();
+
+	if (lateral_norm > 1.f) {
+		lateral_thrust /= lateral_norm;
+	}
+
+	lateral_thrust *= lateral_thrust_limit;
+
+	attitude_setpoint.thrust_body[0] = lateral_thrust(0);
+	attitude_setpoint.thrust_body[1] = lateral_thrust(1);
+	attitude_setpoint.thrust_body[2] = thrust_z;
+
+	attitude_setpoint.timestamp = hrt_absolute_time();
+	_vehicle_attitude_setpoint_pub.publish(attitude_setpoint);
+}
+
+void
 MulticopterAttitudeControl::Run()
 {
 	if (should_exit()) {
@@ -260,6 +313,7 @@ MulticopterAttitudeControl::Run()
 				_vtol = vehicle_status.is_vtol;
 				_vtol_in_transition_mode = vehicle_status.in_transition_mode;
 				_vtol_tailsitter = vehicle_status.is_vtol_tailsitter;
+				_navigation_state_stabilized = (vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
 
 				const bool armed = (vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
 				_spooled_up = armed && hrt_elapsed_time(&vehicle_status.armed_time) > _param_com_spoolup_time.get() * 1_s;
@@ -297,7 +351,16 @@ MulticopterAttitudeControl::Run()
 			    !_vehicle_control_mode.flag_control_velocity_enabled &&
 			    !_vehicle_control_mode.flag_control_position_enabled) {
 
-				generate_attitude_setpoint(q, dt);
+				const bool hummingbird_fully_stabilized = _navigation_state_stabilized
+						&& (_param_ca_airframe.get() == kHummingBirdAirframe)
+						&& (_param_hb_ctrl_mode.get() == kHummingBirdFullyActuatedMode);
+
+				if (hummingbird_fully_stabilized) {
+					generate_hummingbird_stabilized_setpoint(q, dt);
+
+				} else {
+					generate_attitude_setpoint(q, dt);
+				}
 
 			} else {
 				_man_roll_input_filter.reset(0.f);

@@ -96,6 +96,11 @@ private:
 	 */
 	void generate_attitude_setpoint(const matrix::Quatf &q, float dt);
 
+	/**
+	 * Generate & publish a level attitude setpoint with manual lateral thrust for HummingBird.
+	 */
+	void generate_hummingbird_stabilized_setpoint(const matrix::Quatf &q, float dt);
+
 	AttitudeControl _attitude_control; /**< class for attitude control calculations */
 	StickYaw _stick_yaw{this};
 
@@ -144,6 +149,7 @@ private:
 	bool _vtol{false};
 	bool _vtol_tailsitter{false};
 	bool _vtol_in_transition_mode{false};
+	bool _navigation_state_stabilized{false};
 
 	uint8_t _quat_reset_counter{0};
 
@@ -168,6 +174,8 @@ private:
 		(ParamFloat<px4::params::MPC_THR_HOVER>) _param_mpc_thr_hover,
 		(ParamInt<px4::params::MPC_THR_CURVE>) _param_mpc_thr_curve,
 
-		(ParamFloat<px4::params::COM_SPOOLUP_TIME>) _param_com_spoolup_time
+		(ParamFloat<px4::params::COM_SPOOLUP_TIME>) _param_com_spoolup_time,
+		(ParamInt<px4::params::CA_AIRFRAME>) _param_ca_airframe,
+		(ParamInt<px4::params::HB_CTRL_MODE>) _param_hb_ctrl_mode
 	)
 };

@@ -1,0 +1,6 @@
+*
+!.gitignore
+!models/
+models/*
+!models/hummingbird/
+!models/hummingbird/**

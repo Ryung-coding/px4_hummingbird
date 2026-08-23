@@ -109,3 +109,11 @@ src/systemcmds/topic_listener/listener_generated.cpp
 # colcon
 log/
 keys/
+
+# Local vendor checkouts not used by the HummingBird firmware workflow
+/boards/modalai/voxl2/src/lib/mpa/libmodal-json/
+/boards/modalai/voxl2/src/lib/mpa/libmodal-pipe/
+/src/lib/rl_tools/rl_tools/
+/src/modules/mc_raptor/blob/
+/src/modules/simulation/gz_plugins/optical_flow/PX4-OpticalFlow/
+/src/modules/uxrce_dds_client/Micro-XRCE-DDS-Client-v3/
