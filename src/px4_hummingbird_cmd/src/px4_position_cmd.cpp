@@ -43,9 +43,9 @@ public:
     // For px4_multirotor_viewer.py
     hummingbird_status_subscription_ = this->create_subscription<px4_msgs::msg::HummingbirdStatus>("/fmu/out/hummingbird_status", qos, std::bind(&Px4PositionCommand::controller_mode_callback, this, std::placeholders::_1));
     manual_control_subscription_     = this->create_subscription<px4_msgs::msg::ManualControlSetpoint>("/fmu/out/manual_control_setpoint", qos, std::bind(&Px4PositionCommand::RC_callback, this, std::placeholders::_1));
-    local_position_subscription_     = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>("/fmu/out/vehicle_local_position_v1", qos, std::bind(&Px4PositionCommand::local_position_callback, this, std::placeholders::_1));
+    local_position_subscription_     = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>("/fmu/out/vehicle_local_position", qos, std::bind(&Px4PositionCommand::local_position_callback, this, std::placeholders::_1));
     vehicle_attitude_subscription_    = this->create_subscription<px4_msgs::msg::VehicleAttitude>("/fmu/out/vehicle_attitude", qos, std::bind(&Px4PositionCommand::vehicle_attitude_callback, this, std::placeholders::_1));
-    vehicle_status_subscription_     = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status_v1", qos, std::bind(&Px4PositionCommand::vehicle_status_callback, this, std::placeholders::_1));
+    vehicle_status_subscription_     = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status", qos, std::bind(&Px4PositionCommand::vehicle_status_callback, this, std::placeholders::_1));
 
 
     const auto timer_period = std::chrono::nanoseconds(static_cast<int64_t>(1.0e9 / static_cast<double>(params::RATE_HZ)));

@@ -132,10 +132,10 @@ class Px4ViewerNode(Node):
             depth=10,
         )
 
-        self.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position_v1", self._cb_pos, qos)
+        self.create_subscription(VehicleLocalPosition, "/fmu/out/vehicle_local_position", self._cb_pos, qos)
         self.create_subscription(VehicleLocalPositionSetpoint, "/fmu/out/vehicle_local_position_setpoint", self._cb_pos_sp, qos)
         self.create_subscription(VehicleAttitude, "/fmu/out/vehicle_attitude", self._cb_att, qos)
-        self.create_subscription(VehicleAttitudeSetpoint, "/fmu/out/vehicle_attitude_setpoint_v1", self._cb_att_sp, qos)
+        self.create_subscription(VehicleAttitudeSetpoint, "/fmu/out/vehicle_attitude_setpoint", self._cb_att_sp, qos)
         self.create_subscription(VehicleThrustSetpoint, "/fmu/out/vehicle_thrust_setpoint", self._cb_thrust, qos)
         self.create_subscription(VehicleTorqueSetpoint, "/fmu/out/vehicle_torque_setpoint", self._cb_torque, qos)
         self.create_subscription(ManualControlSetpoint, "/fmu/out/manual_control_setpoint", self._cb_manual, qos)
