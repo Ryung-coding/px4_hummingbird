@@ -2,5 +2,8 @@ build/
 install/
 log/
 
+logs/
+__pycache__/
+src/px4_hummingbird_cmd/scripts/viewer_logs/
 *.log
 /.colcon/
