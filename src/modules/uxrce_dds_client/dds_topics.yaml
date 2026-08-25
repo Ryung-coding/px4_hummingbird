@@ -8,9 +8,11 @@
 publications:
   - topic: /fmu/out/hummingbird_status
     type: px4_msgs::msg::HummingbirdStatus
+    rate_limit: 10.
 
   - topic: /fmu/out/actuator_servos
     type: px4_msgs::msg::ActuatorServos
+    rate_limit: 50.
 
   - topic: /fmu/out/vehicle_local_position
     type: px4_msgs::msg::VehicleLocalPosition
@@ -26,24 +28,31 @@ publications:
 
   - topic: /fmu/out/actuator_motors
     type: px4_msgs::msg::ActuatorMotors
+    rate_limit: 50.
 
   - topic: /fmu/out/manual_control_setpoint
     type: px4_msgs::msg::ManualControlSetpoint
+    rate_limit: 25.
 
   - topic: /fmu/out/vehicle_local_position_setpoint
     type: px4_msgs::msg::VehicleLocalPositionSetpoint
+    rate_limit: 25.
 
   - topic: /fmu/out/vehicle_attitude
     type: px4_msgs::msg::VehicleAttitude
+    rate_limit: 50.
 
   - topic: /fmu/out/vehicle_attitude_setpoint
     type: px4_msgs::msg::VehicleAttitudeSetpoint
+    rate_limit: 50.
 
   - topic: /fmu/out/vehicle_thrust_setpoint
     type: px4_msgs::msg::VehicleThrustSetpoint
+    rate_limit: 50.
 
   - topic: /fmu/out/vehicle_torque_setpoint
     type: px4_msgs::msg::VehicleTorqueSetpoint
+    rate_limit: 50.
 
 subscriptions:
   - topic: /fmu/in/offboard_control_mode
@@ -58,25 +67,20 @@ subscriptions:
   - topic: /fmu/in/vehicle_visual_odometry
     type: px4_msgs::msg::VehicleOdometry
 
-  - topic: /fmu/in/trajectory_setpoint
-    type: px4_msgs::msg::TrajectorySetpoint
-
-  - topic: /fmu/in/vehicle_mocap_odometry
-    type: px4_msgs::msg::VehicleOdometry
-
-  - topic: /fmu/in/vehicle_attitude_setpoint
-    type: px4_msgs::msg::VehicleAttitudeSetpoint
-
-  - topic: /fmu/in/vehicle_thrust_setpoint
-    type: px4_msgs::msg::VehicleThrustSetpoint
-
-  - topic: /fmu/in/vehicle_torque_setpoint
-    type: px4_msgs::msg::VehicleTorqueSetpoint
-
-  - topic: /fmu/in/actuator_motors
-    type: px4_msgs::msg::ActuatorMotors
-
-  - topic: /fmu/in/actuator_servos
-    type: px4_msgs::msg::ActuatorServos
+  # Optional command/debug inputs kept disabled for onboard use.
+  # - topic: /fmu/in/trajectory_setpoint
+  #   type: px4_msgs::msg::TrajectorySetpoint
+  # - topic: /fmu/in/vehicle_mocap_odometry
+  #   type: px4_msgs::msg::VehicleOdometry
+  # - topic: /fmu/in/vehicle_attitude_setpoint
+  #   type: px4_msgs::msg::VehicleAttitudeSetpoint
+  # - topic: /fmu/in/vehicle_thrust_setpoint
+  #   type: px4_msgs::msg::VehicleThrustSetpoint
+  # - topic: /fmu/in/vehicle_torque_setpoint
+  #   type: px4_msgs::msg::VehicleTorqueSetpoint
+  # - topic: /fmu/in/actuator_motors
+  #   type: px4_msgs::msg::ActuatorMotors
+  # - topic: /fmu/in/actuator_servos
+  #   type: px4_msgs::msg::ActuatorServos
 
 subscriptions_multi:
