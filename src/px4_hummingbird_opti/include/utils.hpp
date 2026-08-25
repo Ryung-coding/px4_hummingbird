@@ -1,29 +1,9 @@
 #pragma once
 
-#include <cmath>
-
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
 namespace utils {
-
-// Math utils ========================================================
-inline Eigen::Vector4d rpyToQuat(const Eigen::Vector3d& rpy)
-{
-  const double cr = std::cos(0.5 * rpy(0));
-  const double sr = std::sin(0.5 * rpy(0));
-  const double cp = std::cos(0.5 * rpy(1));
-  const double sp = std::sin(0.5 * rpy(1));
-  const double cy = std::cos(0.5 * rpy(2));
-  const double sy = std::sin(0.5 * rpy(2));
-
-  Eigen::Vector4d q;
-  q << cr * cp * cy + sr * sp * sy,
-       sr * cp * cy - cr * sp * sy,
-       cr * sp * cy + sr * cp * sy,
-       cr * cp * sy - sr * sp * cy;
-  return q.normalized();
-}
 
 inline Eigen::Matrix3d quatToRot(const Eigen::Vector4d& q_in)
 {
@@ -60,7 +40,6 @@ inline Eigen::Vector4d rotToQuat(const Eigen::Matrix3d& R)
   return Eigen::Vector4d(q.w(), q.x(), q.y(), q.z());
 }
 
-// Mocap utils =======================================================
 struct Px4Pose
 {
   Eigen::Vector3d pos;
@@ -77,24 +56,6 @@ inline Px4Pose mocapPoseToPx4(const Eigen::Vector3d& opti_pos, const Eigen::Vect
   const Eigen::Vector3d pos_px4 = R_down * (opti_pos - opti_origin);
   const Eigen::Matrix3d R_px4 = R_down * quatToRot(opti_att) * R_down;
   return Px4Pose{pos_px4, rotToQuat(R_px4)};
-}
-
-// Rviz utils ========================================================
-inline double wrapToPi(double angle)
-{
-  while (angle > M_PI) angle -= 2.0 * M_PI;
-  while (angle < -M_PI) angle += 2.0 * M_PI;
-  return angle;
-}
-
-inline double px4HeadingToRvizYaw(double heading_ned)
-{
-  return wrapToPi(0.5 * M_PI - heading_ned);
-}
-
-inline Eigen::Vector3d px4PosToRvizEnu(const Eigen::Vector3d& pos_ned)
-{
-  return Eigen::Vector3d(pos_ned.y(), pos_ned.x(), -pos_ned.z());
 }
 
 }  // namespace utils

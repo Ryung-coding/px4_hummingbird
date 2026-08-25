@@ -20,9 +20,4 @@ static constexpr double position_stddev_m = 0.02;
 static constexpr double orientation_stddev_deg = 3.0;
 static constexpr int quality = 100;
 
-// Rviz --------------------------------------------------------------
-static constexpr char rviz_sub_name[] = "/fmu/out/vehicle_local_position";
-static constexpr char rviz_pub_name[] = "/rviz/px4_local_pose";
-static constexpr char rviz_frame_id[] = "map";
-
 }  // namespace params

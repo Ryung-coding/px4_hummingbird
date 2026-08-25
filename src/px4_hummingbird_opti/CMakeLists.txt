@@ -19,23 +19,11 @@ add_executable(mocap_to_px4
   src/mocap_to_px4.cpp
 )
 
-add_executable(px4_local_to_rviz
-  src/px4_local_to_rviz.cpp
-)
-
 target_include_directories(mocap_to_px4 PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_include_directories(px4_local_to_rviz PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
 target_link_libraries(mocap_to_px4
-  Eigen3::Eigen
-)
-
-target_link_libraries(px4_local_to_rviz
   Eigen3::Eigen
 )
 
@@ -45,15 +33,8 @@ ament_target_dependencies(mocap_to_px4
   px4_msgs
 )
 
-ament_target_dependencies(px4_local_to_rviz
-  rclcpp
-  geometry_msgs
-  px4_msgs
-)
-
 install(TARGETS
   mocap_to_px4
-  px4_local_to_rviz
   DESTINATION lib/${PROJECT_NAME}
 )
 

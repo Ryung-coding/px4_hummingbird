@@ -1,7 +1,6 @@
 from typing import List
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -21,11 +20,6 @@ def generate_launch_description():
     max_radius = LaunchConfiguration("max_radius")
     fps = LaunchConfiguration("fps")
 
-    enable_rviz = LaunchConfiguration("enable_rviz")
-    rviz_sub_name = LaunchConfiguration("rviz_sub_name")
-    rviz_pub_name = LaunchConfiguration("rviz_pub_name")
-    rviz_frame_id = LaunchConfiguration("rviz_frame_id")
-
     return LaunchDescription([
         DeclareLaunchArgument("host_ip", default_value="202.169.1.197"),
         DeclareLaunchArgument("mocap_ip", default_value="202.169.1.100"),
@@ -39,11 +33,6 @@ def generate_launch_description():
         DeclareLaunchArgument("quality", default_value="100"),
         DeclareLaunchArgument("max_radius", default_value="3.0"),
         DeclareLaunchArgument("fps", default_value="500.0"),
-
-        DeclareLaunchArgument("enable_rviz", default_value="true"),
-        DeclareLaunchArgument("rviz_sub_name", default_value="/fmu/out/vehicle_local_position"),
-        DeclareLaunchArgument("rviz_pub_name", default_value="/rviz/px4_local_pose"),
-        DeclareLaunchArgument("rviz_frame_id", default_value="map"),
 
         Node(
             package="libmotioncapture",
@@ -73,19 +62,6 @@ def generate_launch_description():
                 "position_stddev": ParameterValue(position_stddev, value_type=float),
                 "orientation_stddev_deg": ParameterValue(orientation_stddev_deg, value_type=float),
                 "quality": ParameterValue(quality, value_type=int),
-            }],
-        ),
-
-        Node(
-            package="px4_hummingbird_opti",
-            executable="px4_local_to_rviz",
-            name="px4_local_to_rviz",
-            output="screen",
-            condition=IfCondition(enable_rviz),
-            parameters=[{
-                "input_topic": rviz_sub_name,
-                "output_topic": rviz_pub_name,
-                "frame_id": rviz_frame_id,
             }],
         ),
     ])
