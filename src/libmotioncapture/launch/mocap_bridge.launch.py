@@ -13,7 +13,7 @@ def generate_launch_description():
     fps = LaunchConfiguration("fps")
 
     return LaunchDescription([
-        DeclareLaunchArgument("host_ip", default_value="202.169.1.197"),
+        DeclareLaunchArgument("host_ip", default_value="192.168.0.105"),
         DeclareLaunchArgument("mocap_ip", default_value="202.169.1.100"),
         DeclareLaunchArgument("mocap_pub_name", default_value="/opti_raw"),
         DeclareLaunchArgument("max_radius", default_value="3.0"),

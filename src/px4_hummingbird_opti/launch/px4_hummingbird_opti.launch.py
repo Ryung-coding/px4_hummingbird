@@ -21,7 +21,7 @@ def generate_launch_description():
     fps = LaunchConfiguration("fps")
 
     return LaunchDescription([
-        DeclareLaunchArgument("host_ip", default_value="202.169.1.197"),
+        DeclareLaunchArgument("host_ip", default_value="192.168.0.5"),
         DeclareLaunchArgument("mocap_ip", default_value="202.169.1.100"),
         DeclareLaunchArgument("mocap_type", default_value="motionanalysis"),
         DeclareLaunchArgument("mocap_pub_name", default_value="/opti_raw"),
