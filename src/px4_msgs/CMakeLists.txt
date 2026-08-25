@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/HummingbirdStatus.msg
   msg/VehicleLocalPosition.msg
   msg/VehicleLocalPositionSetpoint.msg
+  msg/VehicleOdometry.msg
   msg/ManualControlSetpoint.msg
   msg/OffboardControlMode.msg
   msg/TrajectorySetpoint.msg

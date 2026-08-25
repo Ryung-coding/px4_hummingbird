@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>px4_hummingbird_opti</name>
+  <version>0.0.1</version>
+  <description>Motion capture bridge for PX4 HummingBird visual odometry.</description>
+  <maintainer email="ryung9514@naver.com">Ryung</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>px4_msgs</depend>
+  <depend>Eigen3</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>libmotioncapture</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

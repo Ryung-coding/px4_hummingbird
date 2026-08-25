@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="3">
+    <name>libmotioncapture</name>
+    <version>1.0.0</version>
+    <description>
+        Interface Abstraction for Motion Capture System APIs.
+        Supports Motion Analysis (Cortex), Vicon, OptiTrack, Qualisys, VRPN, and more.
+    </description>
+
+    <maintainer email="todo@todo.com">TODO</maintainer>
+    <license>MIT</license>
+
+    <url type="repository">https://github.com/LiCS-KARPE/libmotioncapture</url>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+
+    <build_depend>eigen</build_depend>
+    <build_depend>boost</build_depend>
+
+    <build_export_depend>eigen</build_export_depend>
+    <build_export_depend>boost</build_export_depend>
+
+    <exec_depend>eigen</exec_depend>
+    <exec_depend>boost</exec_depend>
+
+    <build_depend>python3-dev</build_depend>
+    <exec_depend>python3-numpy</exec_depend>
+
+    <exec_depend>rclpy</exec_depend>
+    <exec_depend>geometry_msgs</exec_depend>
+    <exec_depend>launch_ros</exec_depend>
+
+    <export>
+        <build_type>ament_cmake</build_type>
+    </export>
+</package>
