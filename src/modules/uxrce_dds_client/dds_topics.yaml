@@ -48,12 +48,13 @@ subscriptions:
   - topic: /fmu/in/vehicle_command
     type: px4_msgs::msg::VehicleCommand
 
+  - topic: /fmu/in/vehicle_visual_odometry
+    type: px4_msgs::msg::VehicleOdometry
+
   # Optional command topics kept disabled:
   # - topic: /fmu/in/trajectory_setpoint
   #   type: px4_msgs::msg::TrajectorySetpoint
   # - topic: /fmu/in/vehicle_mocap_odometry
-  #   type: px4_msgs::msg::VehicleOdometry
-  # - topic: /fmu/in/vehicle_visual_odometry
   #   type: px4_msgs::msg::VehicleOdometry
   # - topic: /fmu/in/vehicle_attitude_setpoint
   #   type: px4_msgs::msg::VehicleAttitudeSetpoint
