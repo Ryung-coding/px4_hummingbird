@@ -14,6 +14,10 @@ static constexpr double command_delay_sec = 0.5;
 static constexpr double command_repeat_sec = 1.0;
 static constexpr double message_timeout_sec = 1.0;
 
+// Viewer logging -------------------------------------------------
+static constexpr char viewer_log_dir[] = "~/Desktop/view_log";
+static constexpr char viewer_log_filename[] = "{timestamp}_.jsonl";
+
 static constexpr uint8_t target_system_id = 1;
 static constexpr uint8_t target_component_id = 1;
 static constexpr uint8_t source_system_id = 1;

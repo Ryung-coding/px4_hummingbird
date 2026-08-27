@@ -40,6 +40,8 @@ install(TARGETS
 
 install(DIRECTORY
   launch
+  include
+  config
   DESTINATION share/${PROJECT_NAME}
 )
 
