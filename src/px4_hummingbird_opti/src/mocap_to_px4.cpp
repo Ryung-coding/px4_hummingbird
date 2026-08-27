@@ -12,7 +12,6 @@
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 
-#include <params.hpp>
 #include <utils.hpp>
 
 
@@ -22,23 +21,24 @@ public:
   MocapToPx4()
   : rclcpp::Node("mocap_to_px4")
   {
-    const std::string sub_mocap_topic = this->declare_parameter<std::string>("input_topic", params::mocap_pub_name);
-    const std::string pub_px4_topic = this->declare_parameter<std::string>("output_topic", params::px4_dds_name);
+    const std::string sub_mocap_topic = this->declare_parameter<std::string>("input_topic", "/opti_raw");
+    const std::string pub_px4_topic = this->declare_parameter<std::string>("output_topic", "/fmu/in/vehicle_visual_odometry");
 
-    target_body_name_ = this->declare_parameter<std::string>("target_body_name", params::target_body_name);
-    const std::vector<double> opti_origin = this->declare_parameter<std::vector<double>>("opti_origin", {params::opti_origin_m[0], params::opti_origin_m[1], params::opti_origin_m[2]});
+    target_body_name_ = this->declare_parameter<std::string>("target_body_name", "hummingbird");
+    const std::vector<double> opti_origin = this->declare_parameter<std::vector<double>>("opti_origin", {0.0, 0.0, 0.0});
     if (opti_origin.size() == 3) { opti_origin_ = Eigen::Vector3d(opti_origin[0], opti_origin[1], opti_origin[2]); }
 
-    const double position_stddev_m = this->declare_parameter<double>("position_stddev", params::position_stddev_m);
-    const double orientation_stddev_deg = this->declare_parameter<double>("orientation_stddev_deg", params::orientation_stddev_deg);
+    const double position_stddev_m = this->declare_parameter<double>("position_stddev", 0.02);
+    const double orientation_stddev_deg = this->declare_parameter<double>("orientation_stddev_deg", 3.0);
 
-    quality_ = this->declare_parameter<int>("quality", params::quality);
+    quality_ = this->declare_parameter<int>("quality", 100);
+    const int qos_depth = this->declare_parameter<int>("qos_depth", 10);
     position_variance_ = static_cast<float>(position_stddev_m * position_stddev_m);
     const double orientation_stddev_rad = orientation_stddev_deg * M_PI / 180.0;
     orientation_variance_ = static_cast<float>(orientation_stddev_rad * orientation_stddev_rad);
 
-    sub_mocap_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(sub_mocap_topic, rclcpp::QoS(params::qos_depth), std::bind(&MocapToPx4::onMocap, this, std::placeholders::_1));
-    pub_px4_ = this->create_publisher<px4_msgs::msg::VehicleOdometry>(pub_px4_topic, rclcpp::QoS(params::qos_depth));
+    sub_mocap_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(sub_mocap_topic, rclcpp::QoS(qos_depth), std::bind(&MocapToPx4::onMocap, this, std::placeholders::_1));
+    pub_px4_ = this->create_publisher<px4_msgs::msg::VehicleOdometry>(pub_px4_topic, rclcpp::QoS(qos_depth));
 
     RCLCPP_INFO(this->get_logger(), "Subscribed: %s", sub_mocap_topic.c_str());
     RCLCPP_INFO(this->get_logger(), "Publishing : %s", pub_px4_topic.c_str());
@@ -85,9 +85,9 @@ private:
 
   float position_variance_{0.0F};
   float orientation_variance_{0.0F};
-  int quality_{params::quality};
-  std::string target_body_name_{params::target_body_name};
-  Eigen::Vector3d opti_origin_{params::opti_origin_m[0], params::opti_origin_m[1], params::opti_origin_m[2]};
+  int quality_{100};
+  std::string target_body_name_{"hummingbird"};
+  Eigen::Vector3d opti_origin_{0.0, 0.0, 0.0};
 };
 
 

@@ -1,4 +1,8 @@
-from typing import List
+import re
+from pathlib import Path
+
+import yaml
+from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -7,6 +11,16 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+
+_OPTI_CONFIG_PATH = Path(get_package_share_directory("px4_hummingbird_opti")) / "config" / "opti_params.yaml"
+_CMD_PARAMS = (Path(get_package_share_directory("px4_hummingbird_cmd")) / "include" / "params.hpp").read_text()
+
+def _viewer_config():
+    with _OPTI_CONFIG_PATH.open(encoding="utf-8") as config_file:
+        return yaml.safe_load(config_file)["viewer"]
+
+def _cmd_str(name):
+    return re.search(rf"{name}\[\]\s*=\s*\"([^\"]+)\"", _CMD_PARAMS).group(1)
 
 def generate_launch_description():
     path = LaunchConfiguration("path")
@@ -20,11 +34,9 @@ def generate_launch_description():
 
     viewer_mode = LaunchConfiguration("viewer_mode")
     viewer_log_enabled = LaunchConfiguration("viewer_log_enabled")
-    viewer_log_dir = LaunchConfiguration("viewer_log_dir")
-    opti_topic = LaunchConfiguration("opti_topic")
-    fmu_odom_topic = LaunchConfiguration("fmu_odom_topic")
-    target_body_name = LaunchConfiguration("target_body_name")
-    opti_origin = LaunchConfiguration("opti_origin")
+    viewer_log_dir = _cmd_str("viewer_log_dir")
+    viewer_log_filename = _cmd_str("viewer_log_filename")
+    viewer_config = _viewer_config()
     replay_log_path = LaunchConfiguration("replay_log_path")
 
     return LaunchDescription([
@@ -39,11 +51,6 @@ def generate_launch_description():
 
         DeclareLaunchArgument("viewer_mode", default_value="sim"),
         DeclareLaunchArgument("viewer_log_enabled", default_value="true"),
-        DeclareLaunchArgument("viewer_log_dir", default_value="~/Desktop/px4_hummingbird/src/px4_hummingbird_cmd/scripts/viewer_logs"),
-        DeclareLaunchArgument("opti_topic", default_value="/opti_raw"),
-        DeclareLaunchArgument("fmu_odom_topic", default_value="/fmu/out/vehicle_odometry"),
-        DeclareLaunchArgument("target_body_name", default_value="hummingbird"),
-        DeclareLaunchArgument("opti_origin", default_value="[1.4, 1.4, 0.0]"),
         DeclareLaunchArgument("replay_log_path", default_value=""),
 
         Node(
@@ -86,10 +93,8 @@ def generate_launch_description():
                 "viewer_mode": viewer_mode,
                 "log_enabled": ParameterValue(viewer_log_enabled, value_type=bool),
                 "log_dir": viewer_log_dir,
-                "opti_topic": opti_topic,
-                "fmu_odom_topic": fmu_odom_topic,
-                "target_body_name": target_body_name,
-                "opti_origin": ParameterValue(opti_origin, value_type=List[float]),
+                "log_filename": viewer_log_filename,
+                **viewer_config,
                 "replay_log_path": replay_log_path,
             }],
         ),

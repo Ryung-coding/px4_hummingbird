@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import math
+import queue
 import sys
 import threading
 import time
@@ -14,7 +15,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from px4_msgs.msg import ActuatorMotors, ActuatorServos, HummingbirdStatus, ManualControlSetpoint
 from px4_msgs.msg import VehicleAttitude, VehicleAttitudeSetpoint
-from px4_msgs.msg import VehicleLocalPosition, VehicleLocalPositionSetpoint
+from px4_msgs.msg import VehicleLocalPosition, VehicleLocalPositionSetpoint, VehicleStatus
 from px4_msgs.msg import VehicleThrustSetpoint, VehicleTorqueSetpoint
 
 try:
@@ -22,7 +23,7 @@ try:
 except ImportError:
     VehicleOdometry = None
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -36,15 +37,18 @@ WINDOW_SEC = 10.0
 MAX_SAMPLES = 20000
 UPDATE_MS = 50
 RAD2DEG = 180.0 / math.pi
-DEFAULT_LOG_DIR = "~/Desktop/px4_hummingbird/src/px4_hummingbird_cmd/scripts/viewer_logs"
 R_DOWN = np.diag([1.0, -1.0, -1.0])
-DISPLAY_Z_UP = np.diag([1.0, 1.0, -1.0])
+# PX4 publishes NED/FRD vectors. Display them in a right-handed, z-up NWU
+# frame so axis directions and positive roll/pitch/yaw rotations agree.
+NED_TO_DISPLAY = np.diag([1.0, -1.0, -1.0])
 FRAME_AXIS_LEN = 0.25
 ATTITUDE_FRAME_AXIS_LEN = 0.60
 REAL_3D_XY_LIMIT_M = 2.0
 REAL_3D_Z_MIN_M = 0.0
 REAL_3D_Z_MAX_M = 3.0
-REPLAY_SLIDER_STEPS = 10000
+LOGGER_BATCH_RECORDS = 256
+LOGGER_FLUSH_SEC = 0.5
+LOGGER_QUEUE_RECORDS = 50000
 
 C_R = "#e6194b"
 C_G = "#3cb44b"
@@ -71,6 +75,126 @@ class Home3DToolbar(NavigationToolbar):
         super().home(*args)
 
 
+class ManualRangeSlider(QtWidgets.QWidget):
+    """Two-handle time-range selector used only by the replay controls."""
+
+    valueChanged = QtCore.pyqtSignal(tuple)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._minimum = 0
+        self._maximum = 1000
+        self._low = 0
+        self._high = 1000
+        self._minimum_span = 1
+        self._drag_mode = None
+        self._press_x = 0
+        self._press_low = 0
+        self._press_high = 0
+        self._padding = 10
+        self._handle_width = 12
+        self.setMinimumHeight(26)
+        self.setMouseTracking(True)
+
+    def setRange(self, minimum, maximum):
+        self._minimum = int(min(minimum, maximum))
+        self._maximum = int(max(minimum, maximum))
+        self.setValue((self._low, self._high), emit=False)
+
+    def setValue(self, values, emit=True):
+        low, high = sorted((int(values[0]), int(values[1])))
+        low = max(self._minimum, min(low, self._maximum))
+        high = max(self._minimum, min(high, self._maximum))
+        if high - low < self._minimum_span:
+            high = min(self._maximum, low + self._minimum_span)
+            low = max(self._minimum, high - self._minimum_span)
+        changed = low != self._low or high != self._high
+        self._low, self._high = low, high
+        self.update()
+        if emit and changed:
+            self.valueChanged.emit((low, high))
+
+    def value(self):
+        return self._low, self._high
+
+    def _track_width(self):
+        return max(1, self.width() - 2 * self._padding)
+
+    def _x_from_value(self, value):
+        span = self._maximum - self._minimum
+        ratio = 0.0 if span <= 0 else (value - self._minimum) / float(span)
+        return int(round(self._padding + ratio * self._track_width()))
+
+    def _value_from_x(self, x):
+        ratio = (max(self._padding, min(int(x), self._padding + self._track_width())) - self._padding) / float(self._track_width())
+        return int(round(self._minimum + ratio * (self._maximum - self._minimum)))
+
+    def _geometry(self):
+        center_y = self.height() // 2
+        low_x = self._x_from_value(self._low)
+        high_x = self._x_from_value(self._high)
+        track = QtCore.QRect(self._padding, center_y - 4, self._track_width(), 8)
+        selected = QtCore.QRect(low_x, center_y - 4, max(1, high_x - low_x), 8)
+        low_handle = QtCore.QRect(low_x - self._handle_width // 2, center_y - 9, self._handle_width, 18)
+        high_handle = QtCore.QRect(high_x - self._handle_width // 2, center_y - 9, self._handle_width, 18)
+        return track, selected, low_handle, high_handle
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        track, selected, low_handle, high_handle = self._geometry()
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor("#d9d9d9"))
+        painter.drawRoundedRect(track, 4, 4)
+        painter.setBrush(QtGui.QColor("#1677ff"))
+        painter.drawRoundedRect(selected, 4, 4)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#666666"), 1))
+        painter.setBrush(QtGui.QColor("#ffffff"))
+        painter.drawRoundedRect(low_handle, 3, 3)
+        painter.drawRoundedRect(high_handle, 3, 3)
+
+    def mousePressEvent(self, event):
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        _, selected, low_handle, high_handle = self._geometry()
+        pos = event.pos()
+        if low_handle.adjusted(-8, -5, 8, 5).contains(pos):
+            self._drag_mode = "low"
+        elif high_handle.adjusted(-8, -5, 8, 5).contains(pos):
+            self._drag_mode = "high"
+        elif selected.contains(pos):
+            self._drag_mode = "range"
+        else:
+            low_distance = abs(pos.x() - self._x_from_value(self._low))
+            high_distance = abs(pos.x() - self._x_from_value(self._high))
+            self._drag_mode = "low" if low_distance <= high_distance else "high"
+        self._press_x = pos.x()
+        self._press_low = self._low
+        self._press_high = self._high
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_mode is None:
+            return
+        value = self._value_from_x(event.pos().x())
+        if self._drag_mode == "low":
+            self.setValue((min(value, self._high - self._minimum_span), self._high))
+        elif self._drag_mode == "high":
+            self.setValue((self._low, max(value, self._low + self._minimum_span)))
+        else:
+            start_value = self._value_from_x(self._press_x)
+            delta = value - start_value
+            span = self._press_high - self._press_low
+            low = max(self._minimum, min(self._press_low + delta, self._maximum - span))
+            self.setValue((low, low + span))
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._drag_mode = None
+            event.accept()
+
+
 class Ring:
     def __init__(self, cap, width):
         self._cap = cap
@@ -92,12 +216,16 @@ class Ring:
 
 
 class JsonlLogger:
-    def __init__(self, enabled, log_dir, metadata):
+    def __init__(self, enabled, log_dir, log_filename, metadata):
         self.enabled = bool(enabled)
         self.path = ""
         self._fh = None
-        self._lock = threading.Lock()
+        self._queue = queue.Queue(maxsize=LOGGER_QUEUE_RECORDS)
+        self._stop = threading.Event()
+        self._thread = None
         self._count = 0
+        self._dropped = 0
+        self._start_monotonic = time.monotonic()
 
         if not self.enabled:
             return
@@ -105,12 +233,17 @@ class JsonlLogger:
         try:
             log_root = Path(log_dir).expanduser()
             log_root.mkdir(parents=True, exist_ok=True)
-            stamp = time.strftime("%Y%m%d_%H%M%S")
+            stamp = time.strftime("%m%d_%H%M")
             mode = metadata.get("viewer_mode", "viewer")
-            self.path = str(log_root / f"{stamp}_px4_hummingbird_{mode}.jsonl")
-            self._fh = open(self.path, "a", encoding="utf-8", buffering=1)
+            filename = str(log_filename).format(timestamp=stamp, mode=mode)
+            if not filename or Path(filename).name != filename:
+                raise ValueError("log_filename must produce a plain file name")
+            self.path = str(log_root / filename)
+            self._fh = open(self.path, "a", encoding="utf-8", buffering=1024 * 1024)
+            self._thread = threading.Thread(target=self._writer_loop, name="viewer-jsonl-writer", daemon=True)
+            self._thread.start()
             self.write("viewer_meta", metadata)
-        except OSError:
+        except (OSError, KeyError, ValueError):
             self.enabled = False
             self.path = ""
             self._fh = None
@@ -121,23 +254,71 @@ class JsonlLogger:
 
         record = {
             "wall_time": time.time(),
+            "elapsed_time": time.monotonic() - self._start_monotonic,
             "topic": topic,
             "data": data,
         }
 
-        with self._lock:
-            self._fh.write(json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n")
+        try:
+            self._queue.put_nowait(record)
+        except queue.Full:
+            self._dropped += 1
+
+    def _writer_loop(self):
+        last_flush = time.monotonic()
+        try:
+            while not self._stop.is_set() or not self._queue.empty():
+                batch = []
+                try:
+                    batch.append(self._queue.get(timeout=0.1))
+                except queue.Empty:
+                    pass
+                while len(batch) < LOGGER_BATCH_RECORDS:
+                    try:
+                        batch.append(self._queue.get_nowait())
+                    except queue.Empty:
+                        break
+                lines = []
+                for queued_record in batch:
+                    try:
+                        lines.append(json.dumps(queued_record, separators=(",", ":"), ensure_ascii=True) + "\n")
+                    except (TypeError, ValueError):
+                        self._dropped += 1
+                if lines:
+                    self._fh.write("".join(lines))
+                    self._count += len(lines)
+                now = time.monotonic()
+                if now - last_flush >= LOGGER_FLUSH_SEC:
+                    self._fh.flush()
+                    last_flush = now
+            stats_record = {
+                "wall_time": time.time(),
+                "elapsed_time": time.monotonic() - self._start_monotonic,
+                "topic": "viewer_logger_stats",
+                "data": {"written": self._count, "dropped": self._dropped},
+            }
+            self._fh.write(json.dumps(stats_record, separators=(",", ":"), ensure_ascii=True) + "\n")
             self._count += 1
-            if self._count % 200 == 0:
+        except OSError:
+            self.enabled = False
+        finally:
+            try:
                 self._fh.flush()
+            except OSError:
+                pass
 
     def close(self):
         if self._fh is None:
             return
-        with self._lock:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        try:
             self._fh.flush()
             self._fh.close()
-            self._fh = None
+        except OSError:
+            pass
+        self._fh = None
 
 
 def wrap_deg(x):
@@ -269,6 +450,29 @@ def ctrl_mode_label(value):
     return {0: "CONV", 1: "FULLY"}.get(int(value), "UNKNOWN")
 
 
+def nav_state_label(value):
+    return {
+        0: "MANUAL", 1: "ALTCTL", 2: "POSCTL", 3: "MISSION",
+        4: "LOITER", 5: "RTL", 6: "POS SLOW", 8: "ALT CRUISE",
+        10: "ACRO", 12: "DESCEND", 13: "TERMINATE", 14: "OFFBOARD",
+        15: "STAB", 17: "TAKEOFF", 18: "LAND", 19: "FOLLOW",
+        20: "PRECLAND", 21: "ORBIT", 22: "VTOL TKOFF",
+        23: "EXTERNAL1", 24: "EXTERNAL2", 25: "EXTERNAL3",
+        26: "EXTERNAL4", 27: "EXTERNAL5", 28: "EXTERNAL6",
+        29: "EXTERNAL7", 30: "EXTERNAL8",
+    }.get(int(value), "UNKNOWN")
+
+
+def arm_state_label(arming_state, disarming_reason, nav_state):
+    if int(nav_state) == 13:
+        return "TERMINATE"
+    if int(arming_state) == 2:
+        return "ARMED"
+    if int(disarming_reason) == 9:
+        return "KILL"
+    return "DISARMED" if int(arming_state) == 1 else "UNKNOWN"
+
+
 def vec_from_log(data, key, width):
     return finite_n(data.get(key, []), width)
 
@@ -281,10 +485,10 @@ class Px4ViewerNode(Node):
         self.viewer_subscriptions_ = []
 
         self.viewer_mode = str(self.declare_parameter("viewer_mode", "sim").value).strip().lower()
-        if self.viewer_mode not in ("sim", "real"):
+        if self.viewer_mode not in ("sim", "real", "chk"):
             self.get_logger().warning(f"Unknown viewer_mode='{self.viewer_mode}'. Falling back to sim.")
             self.viewer_mode = "sim"
-        self.real_mode = self.viewer_mode == "real"
+        self.real_mode = self.viewer_mode in ("real", "chk")
 
         self.beta_limit_rad = self.declare_parameter("beta_limit_rad", math.pi).value
         self.alpha_limit_rad = self.declare_parameter("alpha_limit_rad", math.pi / 6.0).value
@@ -296,6 +500,7 @@ class Px4ViewerNode(Node):
         self.replay_log_path = str(self.declare_parameter("replay_log_path", "").value).strip()
         self.replay_enabled = bool(self.replay_log_path)
         self.replay_records = []
+        self.replay_times = np.empty(0, dtype=np.float64)
         self.replay_duration = 0.0
         self.current_replay_time = 0.0
         opti_origin = list(self.declare_parameter("opti_origin", [1.4, 1.4, 0.0]).value)
@@ -305,11 +510,12 @@ class Px4ViewerNode(Node):
         self.opti_origin = np.array(opti_origin, dtype=np.float64)
 
         log_enabled = bool(self.declare_parameter("log_enabled", True).value)
-        if self.replay_enabled:
+        if self.replay_enabled or self.viewer_mode == "chk":
             log_enabled = False
-        log_dir = str(self.declare_parameter("log_dir", DEFAULT_LOG_DIR).value)
+        log_dir = str(self.declare_parameter("log_dir", "").value)
+        log_filename = str(self.declare_parameter("log_filename", "").value)
         self.log_dir = str(Path(log_dir).expanduser())
-        self.logger = JsonlLogger(log_enabled, self.log_dir, {
+        self.logger = JsonlLogger(log_enabled, self.log_dir, log_filename, {
             "viewer_mode": self.viewer_mode,
             "window_sec": WINDOW_SEC,
             "max_samples": MAX_SAMPLES,
@@ -340,6 +546,11 @@ class Px4ViewerNode(Node):
         self.last_dds_enabled = False
         self.last_hummingbird_airframe = False
         self.last_hb_enabled = False
+
+        self.last_nav_state = -1
+        self.last_arming_state = -1
+        self.last_disarming_reason = -1
+        self.last_failsafe = False
 
         self.last_topic_rx = {}
         self.last_opti_rx = None
@@ -396,6 +607,7 @@ class Px4ViewerNode(Node):
             self._subscribe(ActuatorServos, "/fmu/out/actuator_servos", self._cb_servos, qos)
             self._subscribe(ActuatorServos, "/dynamixel_tilt_mea", self._cb_dynamixel_servos, qos)
             self._subscribe(HummingbirdStatus, "/fmu/out/hummingbird_status", self._cb_status, qos)
+            self._subscribe(VehicleStatus, "/fmu/out/vehicle_status", self._cb_vehicle_status, qos)
 
             if self.real_mode:
                 self._subscribe(PoseStamped, self.opti_topic, self._cb_opti, qos)
@@ -608,6 +820,23 @@ class Px4ViewerNode(Node):
             self.last_hummingbird_airframe = bool(airframe)
             self.last_hb_enabled = bool(hb_enabled)
 
+    def _cb_vehicle_status(self, msg):
+        t = self._t()
+        self.logger.write("/fmu/out/vehicle_status", {
+            "timestamp": int(msg.timestamp),
+            "nav_state": int(msg.nav_state),
+            "nav_state_user_intention": int(msg.nav_state_user_intention),
+            "arming_state": int(msg.arming_state),
+            "latest_disarming_reason": int(msg.latest_disarming_reason),
+            "failsafe": bool(msg.failsafe),
+        })
+        with self.lock:
+            self._mark_rx_unlocked("vehicle_status", t)
+            self.last_nav_state = int(msg.nav_state)
+            self.last_arming_state = int(msg.arming_state)
+            self.last_disarming_reason = int(msg.latest_disarming_reason)
+            self.last_failsafe = bool(msg.failsafe)
+
     def _cb_opti(self, msg):
         if self.target_body_name and msg.header.frame_id != self.target_body_name:
             return
@@ -694,7 +923,8 @@ class Px4ViewerNode(Node):
         if not path.is_absolute() and path.parent == Path("."):
             path = Path(self.log_dir) / path
         records = []
-        first_wall_time = None
+        replay_times = []
+        first_source_time = None
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 for line in fh:
@@ -707,42 +937,45 @@ class Px4ViewerNode(Node):
                         continue
                     if record.get("topic") == "viewer_meta":
                         continue
-                    wall_time = json_float(record.get("wall_time"))
-                    if wall_time is None:
+                    source_time = json_float(record.get("elapsed_time"))
+                    if source_time is None:
+                        source_time = json_float(record.get("wall_time"))
+                    if source_time is None:
                         continue
-                    if first_wall_time is None:
-                        first_wall_time = wall_time
-                    record["_replay_t"] = wall_time - first_wall_time
+                    if first_source_time is None:
+                        first_source_time = source_time
+                    replay_time = max(0.0, source_time - first_source_time)
+                    record["_replay_t"] = replay_time
                     records.append(record)
+                    replay_times.append(replay_time)
         except OSError as exc:
             self.get_logger().warning(f"Failed to open replay log {path}: {exc}")
 
         self.replay_records = records
-        self.replay_duration = float(records[-1].get("_replay_t", 0.0)) if records else 0.0
+        self.replay_times = np.asarray(replay_times, dtype=np.float64)
+        self.replay_duration = float(self.replay_times[-1]) if self.replay_times.size else 0.0
         self.current_replay_time = self.replay_duration
         self.get_logger().info(f"Loaded {len(records)} replay records from {path}")
 
-    def apply_replay_window(self, cursor_time, window_sec):
-        if not self.replay_enabled:
+    def apply_replay_range(self, start_time, end_time):
+        if not self.replay_enabled or self.replay_times.size == 0:
             return
 
-        cursor_time = max(0.0, min(float(cursor_time), self.replay_duration))
-        window_sec = max(0.1, float(window_sec))
-        start_time = max(0.0, cursor_time - window_sec)
+        start_time, end_time = sorted((float(start_time), float(end_time)))
+        start_time = max(0.0, min(start_time, self.replay_duration))
+        end_time = max(start_time, min(end_time, self.replay_duration))
+        lo = int(np.searchsorted(self.replay_times, start_time, side="left"))
+        hi = int(np.searchsorted(self.replay_times, end_time, side="right"))
 
         with self.lock:
             self._reset_replay_view_state_unlocked()
-            self.current_replay_time = cursor_time
+            self.current_replay_time = end_time
 
-        for record in self.replay_records:
-            t = float(record.get("_replay_t", 0.0))
-            if t > cursor_time:
-                break
-            if t >= start_time:
-                self._ingest_replay_record(record)
+        for record in self.replay_records[lo:hi]:
+            self._ingest_replay_record(record)
 
         with self.lock:
-            self.current_replay_time = cursor_time
+            self.current_replay_time = end_time
 
     def _reset_replay_view_state_unlocked(self):
         self.last_pos_sp = np.zeros(3, dtype=np.float64)
@@ -762,6 +995,10 @@ class Px4ViewerNode(Node):
         self.last_dds_enabled = False
         self.last_hummingbird_airframe = False
         self.last_hb_enabled = False
+        self.last_nav_state = -1
+        self.last_arming_state = -1
+        self.last_disarming_reason = -1
+        self.last_failsafe = False
         self.last_topic_rx = {}
         self.last_opti_rx = None
         self.last_opti_pos = None
@@ -898,6 +1135,15 @@ class Px4ViewerNode(Node):
                 self.last_hb_enabled = bool(data.get("hummingbird_control_enabled", False))
             return
 
+        if topic == "/fmu/out/vehicle_status":
+            with self.lock:
+                self._mark_rx_unlocked("vehicle_status", t)
+                self.last_nav_state = int(data.get("nav_state", -1))
+                self.last_arming_state = int(data.get("arming_state", -1))
+                self.last_disarming_reason = int(data.get("latest_disarming_reason", -1))
+                self.last_failsafe = bool(data.get("failsafe", False))
+            return
+
         if "px4_position_ned" in data:
             pos = vec_from_log(data, "px4_position_ned", 3)
             q = vec_from_log(data, "px4_q_wxyz", 4)
@@ -988,6 +1234,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         self.badge_mode = QtWidgets.QLabel()
         self.badge_log = QtWidgets.QLabel()
+        self.badge_flight = QtWidgets.QLabel()
+        self.badge_arm = QtWidgets.QLabel()
         self.badge_hb = QtWidgets.QLabel()
         self.badge_dds = QtWidgets.QLabel()
         self.badge_manual = QtWidgets.QLabel()
@@ -1001,6 +1249,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
         badges = [
             self.badge_mode,
             self.badge_log,
+            self.badge_flight,
+            self.badge_arm,
             self.badge_hb,
             self.badge_dds,
             self.badge_manual,
@@ -1029,10 +1279,12 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.real_time_plots = []
         self.real_bottom_time_plots = []
         self.window_sec = WINDOW_SEC
-        self.replay_position_slider = None
-        self.replay_window_slider = None
-        self.replay_position_label = None
-        self.replay_window_label = None
+        self.replay_range_slider = None
+        self.replay_range_label = None
+        self._pending_replay_range = None
+        self._replay_apply_timer = QtCore.QTimer(self)
+        self._replay_apply_timer.setSingleShot(True)
+        self._replay_apply_timer.timeout.connect(self._apply_pending_replay_range)
         self.real_3d_enabled = False
         self.real_3d_path_canvas = None
         self.real_3d_path_ax = None
@@ -1080,43 +1332,38 @@ class ViewerWindow(QtWidgets.QMainWindow):
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(2)
 
-        self.replay_position_label = QtWidgets.QLabel()
-        self.replay_window_label = QtWidgets.QLabel()
-        self.replay_position_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.replay_window_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.replay_range_label = QtWidgets.QLabel()
+        self.replay_range_slider = ManualRangeSlider()
+        duration_ms = max(1, int(round(self.node.replay_duration * 1000.0)))
+        start_ms = max(0, duration_ms - int(round(WINDOW_SEC * 1000.0)))
+        self.replay_range_slider.setRange(0, duration_ms)
+        self.replay_range_slider.setValue((start_ms, duration_ms), emit=False)
+        self.replay_range_slider.valueChanged.connect(self._on_replay_controls_changed)
 
-        self.replay_position_slider.setRange(0, REPLAY_SLIDER_STEPS)
-        self.replay_position_slider.setValue(REPLAY_SLIDER_STEPS)
-        max_window = max(1, int(math.ceil(max(self.node.replay_duration, WINDOW_SEC))))
-        self.replay_window_slider.setRange(1, max_window)
-        self.replay_window_slider.setValue(min(max_window, int(round(WINDOW_SEC))))
-
-        self.replay_position_slider.valueChanged.connect(self._on_replay_controls_changed)
-        self.replay_window_slider.valueChanged.connect(self._on_replay_controls_changed)
-
-        layout.addWidget(QtWidgets.QLabel("Log position"), 0, 0)
-        layout.addWidget(self.replay_position_slider, 0, 1)
-        layout.addWidget(self.replay_position_label, 0, 2)
-        layout.addWidget(QtWidgets.QLabel("Window"), 1, 0)
-        layout.addWidget(self.replay_window_slider, 1, 1)
-        layout.addWidget(self.replay_window_label, 1, 2)
+        layout.addWidget(QtWidgets.QLabel("Log range"), 0, 0)
+        layout.addWidget(self.replay_range_slider, 0, 1)
+        layout.addWidget(self.replay_range_label, 0, 2)
         layout.setColumnStretch(1, 1)
         return widget
 
-    def _on_replay_controls_changed(self):
-        if not self.node.replay_enabled or self.replay_position_slider is None:
+    def _on_replay_controls_changed(self, values=None):
+        if not self.node.replay_enabled or self.replay_range_slider is None:
             return
+        low_ms, high_ms = self.replay_range_slider.value() if values is None else values
+        self._pending_replay_range = (int(low_ms), int(high_ms))
+        self._replay_apply_timer.start(30)
 
-        duration = max(self.node.replay_duration, 0.0)
-        cursor = duration * float(self.replay_position_slider.value()) / float(REPLAY_SLIDER_STEPS) if duration > 0.0 else 0.0
-        window = float(self.replay_window_slider.value())
-        self.window_sec = window
-        self.node.apply_replay_window(cursor, window)
-
-        if self.replay_position_label is not None:
-            self.replay_position_label.setText(f"{cursor:.1f} / {duration:.1f} s")
-        if self.replay_window_label is not None:
-            self.replay_window_label.setText(f"{window:.0f} s")
+    def _apply_pending_replay_range(self):
+        if self._pending_replay_range is None:
+            return
+        low_ms, high_ms = self._pending_replay_range
+        self._pending_replay_range = None
+        start_time = float(low_ms) / 1000.0
+        end_time = float(high_ms) / 1000.0
+        self.window_sec = max(0.001, end_time - start_time)
+        self.node.apply_replay_range(start_time, end_time)
+        if self.replay_range_label is not None:
+            self.replay_range_label.setText(f"{start_time:.3f} - {end_time:.3f} s  ({self.window_sec:.3f} s)")
         self._update()
 
     @staticmethod
@@ -1161,6 +1408,10 @@ class ViewerWindow(QtWidgets.QMainWindow):
             manual = nd.last_manual_valid
             cmd = nd.last_hb_cmd_source
             ctrl = nd.last_hb_ctrl_mode
+            nav_state = nd.last_nav_state
+            arming_state = nd.last_arming_state
+            disarming_reason = nd.last_disarming_reason
+            failsafe = nd.last_failsafe
             source = nd.last_fmu_pose_source
             value_delay_ms = nd.last_value_delay_ms
             match_error_m = nd.last_match_error_m
@@ -1168,12 +1419,27 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         view_value = "REPLAY" if nd.replay_enabled else nd.viewer_mode.upper()
         self._set_value_badge(self.badge_mode, "VIEW", view_value, "#6a1b9a" if nd.replay_enabled else "#1565c0" if nd.real_mode else "#455a64")
-        self.badge_mode.setToolTip("viewer_mode: sim=Gazebo/SITL, real=onboard Wi-Fi + OptiTrack, replay=JSONL playback")
+        self.badge_mode.setToolTip("viewer_mode: sim=Gazebo/SITL, real=onboard Wi-Fi + OptiTrack, chk=real without logging, replay=JSONL playback")
 
         log_value = "REPLAY" if nd.replay_enabled else "ON" if nd.logger.enabled else "OFF"
         log_bg = "#6a1b9a" if nd.replay_enabled else "#2e7d32" if nd.logger.enabled else "#757575"
         self._set_value_badge(self.badge_log, "LOG", log_value, log_bg)
         self.badge_log.setToolTip(nd.replay_log_path if nd.replay_enabled else nd.logger.path if nd.logger.path else "logging disabled")
+
+        flight_label = nav_state_label(nav_state)
+        flight_bg = "#c62828" if nav_state == 13 or failsafe else "#1565c0" if flight_label != "UNKNOWN" else "#757575"
+        self._set_value_badge(self.badge_flight, "FLIGHT", flight_label, flight_bg)
+        self.badge_flight.setToolTip("vehicle_status.nav_state (active PX4 flight mode)")
+
+        arm_label = arm_state_label(arming_state, disarming_reason, nav_state)
+        arm_bg = {
+            "ARMED": "#2e7d32",
+            "DISARMED": "#455a64",
+            "KILL": "#c62828",
+            "TERMINATE": "#c62828",
+        }.get(arm_label, "#757575")
+        self._set_value_badge(self.badge_arm, "ARM", arm_label, arm_bg)
+        self.badge_arm.setToolTip("vehicle_status: arming_state / latest_disarming_reason / termination")
 
         self._set_bool_badge(self.badge_hb, "HB AIR", hb_airframe)
         self.badge_hb.setToolTip("hummingbird_status.hummingbird_airframe")
@@ -1565,11 +1831,11 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _to_3d_display(arr):
-        return np.column_stack((arr[:, 1], arr[:, 2], -arr[:, 3]))
+        return (NED_TO_DISPLAY @ np.asarray(arr[:, 1:4], dtype=np.float64).T).T
 
     @staticmethod
     def _ned_vec_to_display(v):
-        return DISPLAY_Z_UP @ np.asarray(v, dtype=np.float64)
+        return NED_TO_DISPLAY @ np.asarray(v, dtype=np.float64)
 
     @staticmethod
     def _default_position_3d_view():
@@ -1618,9 +1884,9 @@ class ViewerWindow(QtWidgets.QMainWindow):
     def _setup_position_3d_axis(ax, view=None):
         ax.clear()
         ax.set_title("3D position: Opti / FMU", fontsize=12, fontweight="bold")
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        ax.set_zlabel("height [-NED z] [m]")
+        ax.set_xlabel("x [N] [m]")
+        ax.set_ylabel("y [-E] [m]")
+        ax.set_zlabel("z [-D] [m]")
         ax.grid(True)
         try:
             ax.set_box_aspect((4.0, 4.0, 3.0))
@@ -1631,10 +1897,10 @@ class ViewerWindow(QtWidgets.QMainWindow):
     @staticmethod
     def _setup_attitude_3d_axis(ax, view=None):
         ax.clear()
-        ax.set_title("Attitude frames only", fontsize=12, fontweight="bold")
-        ax.set_xlabel("display x")
-        ax.set_ylabel("display y")
-        ax.set_zlabel("display z")
+        ax.set_title("Attitude frames (right-handed NWU)", fontsize=12, fontweight="bold")
+        ax.set_xlabel("world x [N]")
+        ax.set_ylabel("world y [-E]")
+        ax.set_zlabel("world z [-D]")
         ax.grid(True)
         try:
             ax.set_box_aspect((2.5, 1.8, 1.8))

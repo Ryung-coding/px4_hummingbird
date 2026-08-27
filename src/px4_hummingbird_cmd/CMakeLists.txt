@@ -86,6 +86,7 @@ install(PROGRAMS
 
 install(DIRECTORY
   launch
+  include
   DESTINATION share/${PROJECT_NAME}
 )
 

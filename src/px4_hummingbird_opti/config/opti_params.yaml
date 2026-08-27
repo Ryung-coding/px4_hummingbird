@@ -1,0 +1,23 @@
+mocap_bridge:
+  host_ip: "192.168.0.5"
+  mocap_ip: "202.169.1.100"
+  type: "motionanalysis"
+  mocap_pub_name: "/opti_raw"
+  max_radius: 3.0
+  fps: 500.0
+
+mocap_to_px4:
+  input_topic: "/opti_raw"
+  output_topic: "/fmu/in/vehicle_visual_odometry"
+  target_body_name: "hummingbird"
+  opti_origin: [1.4, 1.4, 0.15]
+  position_stddev: 0.02
+  orientation_stddev_deg: 3.0
+  quality: 100
+  qos_depth: 10
+
+viewer:
+  opti_topic: "/opti_raw"
+  fmu_odom_topic: "/fmu/out/vehicle_odometry"
+  target_body_name: "hummingbird"
+  opti_origin: [1.4, 1.4, 0.15]
