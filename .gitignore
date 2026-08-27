@@ -4,3 +4,19 @@ log/
 
 *.log
 /.colcon/
+
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Viewer and ROS runtime logs
+*.jsonl
+viewer_logs/
+view_log/
+rosbag2_*/
+*.db3
+*.mcap
