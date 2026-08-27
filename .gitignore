@@ -7,3 +7,14 @@ __pycache__/
 src/px4_hummingbird_cmd/scripts/viewer_logs/
 *.log
 /.colcon/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.jsonl
+viewer_logs/
+view_log/
+rosbag2_*/
+*.db3
+*.mcap
