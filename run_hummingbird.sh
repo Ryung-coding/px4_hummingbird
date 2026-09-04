@@ -56,14 +56,6 @@ start_qgc
 start_dds_agent_if_available
 start_px4_sitl
 
-if [ "$#" -eq 0 ]; then
-  set -- auto_offboard:=true auto_arm:=true
-fi
-
-case " $* " in
-  *" model_name:="*) ;;
-  *) set -- "$@" model_name:=hummingbird_0 ;;
-esac
 
 echo "Starting px4_hummingbird_cmd in a new terminal..."
 gnome-terminal -- bash -lc "cd '$WS_DIR' && source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch px4_hummingbird_cmd px4_position_cmd.launch.py $*; exec bash" &
