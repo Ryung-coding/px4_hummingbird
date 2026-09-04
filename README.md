@@ -110,13 +110,8 @@ Gazebo에서 HummingBird 모델 이름은 다음과 같다.
 hummingbird_0
 ```
 
-따라서 servo bridge 실행 시 반드시 다음 파라미터를 넣어야 한다.
-
-```bash
-model_name:=hummingbird_0
-```
-
-잘못 넣으면 ROS 2 bridge가 다른 Gazebo 토픽으로 publish해서 서보가 움직이지 않는다.
+`px4_position_cmd.launch.py`는 더 이상 `model_name`을 받지 않는다.
+서보 bridge와 viewer/logging은 position launch와 분리해서 필요할 때 별도로 실행한다.
 
 
 # 4. 액추에이터 번호별 beta / alpha 매핑
@@ -218,7 +213,7 @@ PX4 trajectory_setpoint:
 alias QGC='cd ~/Applications && ./QGroundControl-x86_64.AppImage'
 alias agent='~/Desktop/px4_hummingbird/run_agent.sh'
 alias px4='cd ~/Desktop/PX4-Autopilot && make px4_sitl gz_hummingbird'
-alias px4_ros='ros2 launch px4_hummingbird_cmd px4_position_cmd.launch.py auto_offboard:=true auto_arm:=true'
+alias px4_ros='ros2 launch px4_hummingbird_cmd px4_position_cmd.launch.py'
 ```
 
 각 alias의 역할:
@@ -227,7 +222,7 @@ alias px4_ros='ros2 launch px4_hummingbird_cmd px4_position_cmd.launch.py auto_o
 QGC      : QGroundControl 실행
 agent    : Micro XRCE DDS Agent 실행, 기본 포트 udp4 8888
 px4      : PX4 SITL + Gazebo HummingBird 실행
-px4_ros  : ROS 2 command node와 servo bridge launch 실행
+px4_ros  : ROS 2 position command node launch 실행
 ```
 
 # 7. path 이름
@@ -236,25 +231,21 @@ px4_ros  : ROS 2 command node와 servo bridge launch 실행
 `px4_position_cmd`에서 사용할 수 있는 path 이름:
 
 ```text
-position_tuning
-hover
-track_apple
-take_apple
-attitude_tuning
-agile
-position_track
+pos
+att
+step_att
 ```
 
 현재 alias 기준 실행 예시:
 
 ```bash
-px4_ros path:=position_tuning
-px4_ros path:=hover
-px4_ros path:=position_track
+px4_ros path:=pos
+px4_ros path:=att
+px4_ros path:=step_att
 ```
 
 launch 명령을 직접 쓸 경우:
 
 ```bash
-ros2 launch px4_hummingbird_cmd px4_position_cmd.launch.py path:=position_tuning auto_offboard:=true auto_arm:=true model_name:=hummingbird_0
+ros2 launch px4_hummingbird_cmd px4_position_cmd.launch.py path:=step_att
 ```
