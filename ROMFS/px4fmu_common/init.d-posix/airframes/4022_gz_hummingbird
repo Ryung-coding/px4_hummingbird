@@ -18,6 +18,7 @@ param set-default SYS_HAS_GPS 1
 param set-default EKF2_EV_CTRL 0
 param set-default EKF2_GPS_CTRL 7
 param set-default EKF2_HGT_REF 0
+param set-default EKF2_IMU_POS_Z -0.05
 
 param set CA_AIRFRAME 16
 param set-default HB_CTRL_MODE 0
@@ -30,22 +31,22 @@ param set CA_ROTOR_COUNT 4
 param set CA_ROTOR0_PX 0.175
 param set CA_ROTOR0_PY 0.175
 param set CA_ROTOR0_PZ -0.05
-param set CA_ROTOR0_KM 0.05
+param set CA_ROTOR0_KM -0.05
 
 param set CA_ROTOR1_PX -0.175
 param set CA_ROTOR1_PY 0.175
 param set CA_ROTOR1_PZ -0.05
-param set CA_ROTOR1_KM -0.05
+param set CA_ROTOR1_KM 0.05
 
 param set CA_ROTOR2_PX -0.175
 param set CA_ROTOR2_PY -0.175
 param set CA_ROTOR2_PZ -0.05
-param set CA_ROTOR2_KM 0.05
+param set CA_ROTOR2_KM -0.05
 
 param set CA_ROTOR3_PX 0.175
 param set CA_ROTOR3_PY -0.175
 param set CA_ROTOR3_PZ -0.05
-param set CA_ROTOR3_KM -0.05
+param set CA_ROTOR3_KM 0.05
 
 # Motors: f[0..3].
 param set SIM_GZ_EC_FUNC1 101

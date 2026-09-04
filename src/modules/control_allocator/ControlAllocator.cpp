@@ -120,7 +120,7 @@ HummingBirdAllocationOutput allocation_P2T2_renewal(const matrix::Vector3f &mome
 		{kHummingBirdLx, -kHummingBirdLy, 0.0f},
 	};
 
-	const float spin[4] = {1.0f, -1.0f, 1.0f, -1.0f};
+	const float spin[4] = {-1.0f, 1.0f, -1.0f, 1.0f};
 
 	Matrix44f B{};
 

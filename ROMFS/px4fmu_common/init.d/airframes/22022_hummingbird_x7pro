@@ -9,55 +9,61 @@
 . ${R}etc/init.d/rc.mc_defaults
 
 # HummingBird allocator/controller selection.
-param set CA_AIRFRAME 16
+param set-default CA_AIRFRAME 16
 param set-default HB_CTRL_MODE 0
 param set-default HB_CMD_SOURCE 0
 
 # Physical geometry: alpha_1..4, beta_1..2 allocation uses this rotor order.
-param set CA_ROTOR_COUNT 4
+param set-default CA_ROTOR_COUNT 4
 
-param set CA_ROTOR0_PX 0.175
-param set CA_ROTOR0_PY 0.175
-param set CA_ROTOR0_PZ -0.05
-param set CA_ROTOR0_KM 0.05
+param set-default CA_ROTOR0_PX 0.175
+param set-default CA_ROTOR0_PY 0.175
+param set-default CA_ROTOR0_PZ -0.05
+param set-default CA_ROTOR0_KM -0.05
 
-param set CA_ROTOR1_PX -0.175
-param set CA_ROTOR1_PY 0.175
-param set CA_ROTOR1_PZ -0.05
-param set CA_ROTOR1_KM -0.05
+param set-default CA_ROTOR1_PX -0.175
+param set-default CA_ROTOR1_PY 0.175
+param set-default CA_ROTOR1_PZ -0.05
+param set-default CA_ROTOR1_KM 0.05
 
-param set CA_ROTOR2_PX -0.175
-param set CA_ROTOR2_PY -0.175
-param set CA_ROTOR2_PZ -0.05
-param set CA_ROTOR2_KM 0.05
+param set-default CA_ROTOR2_PX -0.175
+param set-default CA_ROTOR2_PY -0.175
+param set-default CA_ROTOR2_PZ -0.05
+param set-default CA_ROTOR2_KM -0.05
 
-param set CA_ROTOR3_PX 0.175
-param set CA_ROTOR3_PY -0.175
-param set CA_ROTOR3_PZ -0.05
-param set CA_ROTOR3_KM -0.05
+param set-default CA_ROTOR3_PX 0.175
+param set-default CA_ROTOR3_PY -0.175
+param set-default CA_ROTOR3_PZ -0.05
+param set-default CA_ROTOR3_KM 0.05
 
 # Main PWM outputs: Motor 1..4. Tilt servo angles are exported through DDS.
-param set PWM_MAIN_FUNC1 101
-param set PWM_MAIN_FUNC2 102
-param set PWM_MAIN_FUNC3 103
-param set PWM_MAIN_FUNC4 104
+param set-default PWM_MAIN_FUNC1 101
+param set-default PWM_MAIN_FUNC2 102
+param set-default PWM_MAIN_FUNC3 103
+param set-default PWM_MAIN_FUNC4 104
 
 # Serial ports.
-param set MAV_0_CONFIG 101
-param set MAV_1_CONFIG 0
-param set RC_CRSF_PRT_CFG 202
-param set UXRCE_DDS_CFG 102
-param set UXRCE_DDS_DOM_ID 13
-param set SER_TEL2_BAUD 921600
+param set-default MAV_0_CONFIG 101
+param set-default MAV_1_CONFIG 0
+param set-default RC_CRSF_PRT_CFG 202
+param set-default UXRCE_DDS_CFG 102
+param set-default UXRCE_DDS_DOM_ID 13
+param set-default SER_TEL2_BAUD 921600
+
+# Safety.
+param set-default COM_KILL_DISARM 1.0
 
 # Indoor estimator setup. GPS is disabled; external vision can be enabled later.
-param set SYS_HAS_GPS 0
-param set EKF2_GPS_CTRL 0
-param set EKF2_EV_CTRL 11
-param set EKF2_HGT_REF 0
-param set EKF2_BARO_CTRL 1
+param set-default SYS_HAS_GPS 0
+param set-default EKF2_GPS_CTRL 0
+param set-default EKF2_EV_CTRL 11
+param set-default EKF2_HGT_REF 3
+param set-default EKF2_MAG_TYPE 5
+param set-default EKF2_RNG_CTRL 0
+param set-default EKF2_BARO_CTRL 1
+param set-default EKF2_IMU_POS_Z -0.05
 
 # DroneCAN power module.
-param set UAVCAN_ENABLE 2
-param set UAVCAN_SUB_BAT 1
-param set BAT1_SOURCE 1
+param set-default UAVCAN_ENABLE 2
+param set-default UAVCAN_SUB_BAT 1
+param set-default BAT1_SOURCE 1

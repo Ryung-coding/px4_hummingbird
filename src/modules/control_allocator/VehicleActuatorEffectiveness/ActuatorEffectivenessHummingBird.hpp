@@ -46,7 +46,7 @@ public:
 
 	void getDesiredAllocationMethod(AllocationMethod allocation_method_out[MAX_NUM_MATRICES]) const override
 	{
-		allocation_method_out[0] = AllocationMethod::PSEUDO_INVERSE;
+		allocation_method_out[0] = AllocationMethod::SEQUENTIAL_DESATURATION;
 	}
 
 	void getNormalizeRPY(bool normalize[MAX_NUM_MATRICES]) const override
