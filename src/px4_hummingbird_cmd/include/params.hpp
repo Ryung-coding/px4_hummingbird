@@ -24,7 +24,7 @@ static constexpr uint8_t source_system_id = 1;
 static constexpr uint16_t source_component_id = 1;
 
 // Planning Setting -----------------------------------------------
-static constexpr double handoff_runtime = 8.0;
+static constexpr double handoff_runtime = 5.0;
 
 // Command frame: local NED position, z-down, yaw as NED heading.
 static constexpr double initial_pose_x_m = 0.0;
@@ -34,13 +34,13 @@ static constexpr double initial_pose_roll_rad = 0.0;
 static constexpr double initial_pose_pitch_rad = 0.0;
 static constexpr double initial_pose_yaw_rad = 0.0;
 
-static constexpr double pos_tol = 0.15;
+static constexpr double pos_tol = 0.1;
 static constexpr double yaw_tol = 5.0 * M_PI / 180.0;
 static constexpr double att_tol = 5.0 * M_PI / 180.0;
 
 // Task parameters -----------------------------------------------
-static constexpr double ROLL_MAX = 20.0 * M_PI / 180.0;
-static constexpr double PITCH_MAX = 60.0 * M_PI / 180.0;
+static constexpr double ROLL_MAX = 0.0 * M_PI / 180.0;
+static constexpr double PITCH_MAX = 20.0 * M_PI / 180.0;
 
 // Common servo parameters -----------------------------------------------
 static constexpr double BETA_LIMIT_RAD = M_PI;

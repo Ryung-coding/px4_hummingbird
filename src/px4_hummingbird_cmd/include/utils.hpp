@@ -154,8 +154,8 @@ inline TargetCMD RC2DDS_handoff(const TargetCMD& initial_pose, HandoffFilters& f
 // Path utils =========================================================
 inline TargetCMD posPath(double t)
 {
-  static constexpr double SEG_SEC = 5.0;
-  static constexpr double XY = 1.0;
+  static constexpr double SEG_SEC = 10.0;
+  static constexpr double XY = 0.5;
 
   TargetCMD cmd;
 
@@ -187,7 +187,7 @@ inline TargetCMD posPath(double t)
 
 inline TargetCMD attPath(double t)
 {
-  static constexpr double TUNE_SEC = 5.0;
+  static constexpr double TUNE_SEC = 30.0;
 
   TargetCMD cmd;
 
@@ -198,7 +198,7 @@ inline TargetCMD attPath(double t)
   cmd.x = 0.0;
   cmd.y = 0.0;
   cmd.z = 0.0;
-  cmd.roll = params::ROLL_MAX * std::sin(w * axis_t);
+  cmd.roll = 0.0;
   cmd.pitch = params::PITCH_MAX * std::sin(w * axis_t);
   cmd.yaw = 0.0;
 
@@ -208,13 +208,13 @@ inline TargetCMD attPath(double t)
 inline TargetCMD stepAttPath(double t)
 {
   static constexpr double ZERO_HOLD_SEC = 2.0;
-  static constexpr double RAMP_SEC = 1.0;
-  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double RAMP_SEC = 3.0;
+  static constexpr double HOLD_SEC = 5.0;
 
   static constexpr double SWITCH_DEG = 60.0;
-  static constexpr double FIRST_STEP_DEG = 10.0;
+  static constexpr double FIRST_STEP_DEG = 5.0;
   static constexpr double SECOND_STEP_DEG = 1.0;
-  static constexpr double MAX_DEG = 80.0;
+  static constexpr double MAX_DEG = 60.0;
   static constexpr double DEG2RAD = M_PI / 180.0;
 
   static constexpr int FIRST_STAGE_COUNT = static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
@@ -228,12 +228,20 @@ inline TargetCMD stepAttPath(double t)
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
 
-  if (t < ZERO_HOLD_SEC) return cmd;
-
-  const double ts = t - ZERO_HOLD_SEC;
   const double stage_sec = RAMP_SEC + HOLD_SEC;
-  const int stage = static_cast<int>(std::floor(ts / stage_sec));
+  const int UP_STAGE_COUNT = FIRST_STAGE_COUNT + static_cast<int>((MAX_DEG - SWITCH_DEG) / SECOND_STEP_DEG);
+  const double cycle_sec = ZERO_HOLD_SEC + 2.0 * UP_STAGE_COUNT * stage_sec + ZERO_HOLD_SEC;
+  const double cycle_t = std::fmod(t, cycle_sec);
+
+  if (cycle_t < ZERO_HOLD_SEC) return cmd;
+
+  const double ts = cycle_t - ZERO_HOLD_SEC;
+  if (ts >= 2.0 * UP_STAGE_COUNT * stage_sec) return cmd;
+
+  const int raw_stage = static_cast<int>(std::floor(ts / stage_sec));
   const double stage_t = std::fmod(ts, stage_sec);
+  const bool down = raw_stage >= UP_STAGE_COUNT;
+  const int stage = down ? 2 * UP_STAGE_COUNT - raw_stage - 1 : raw_stage;
 
   double start_deg;
   double target_deg;
@@ -254,14 +262,10 @@ inline TargetCMD stepAttPath(double t)
   start_deg = std::min(start_deg, MAX_DEG);
   target_deg = std::min(target_deg, MAX_DEG);
 
+  if (down) std::swap(start_deg, target_deg);
+
   const double start_angle = start_deg * DEG2RAD;
   const double target_angle = target_deg * DEG2RAD;
-
-  if (start_deg >= MAX_DEG)
-  {
-    cmd.pitch = MAX_DEG * DEG2RAD;
-    return cmd;
-  }
 
   if (stage_t < RAMP_SEC)
   {

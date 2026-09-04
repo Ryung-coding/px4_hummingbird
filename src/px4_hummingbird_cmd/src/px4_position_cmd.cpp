@@ -29,8 +29,8 @@ public:
   : rclcpp::Node("px4_position_cmd")
   {
     trajectory_name_ = this->declare_parameter<std::string>("path", "pos");
-    auto_offboard_   = this->declare_parameter<bool>("auto_offboard", false);
-    auto_arm_        = this->declare_parameter<bool>("auto_arm", false);
+    auto_offboard_   = this->declare_parameter<bool>("auto_offboard", true);
+    auto_arm_        = this->declare_parameter<bool>("auto_arm", true);
 
     offboard_mode_publisher_   = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
     trajectory_publisher_      = this->create_publisher<px4_msgs::msg::TrajectorySetpoint6dof>("/fmu/in/trajectory_setpoint6dof", 10);
