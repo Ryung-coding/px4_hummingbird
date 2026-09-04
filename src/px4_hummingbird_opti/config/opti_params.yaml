@@ -1,5 +1,5 @@
 mocap_bridge:
-  host_ip: "202.169.1.197"
+  host_ip: "192.168.0.6"
   mocap_ip: "202.169.1.100"
   type: "motionanalysis"
   mocap_pub_name: "/opti_raw"

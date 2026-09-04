@@ -503,10 +503,10 @@ class Px4ViewerNode(Node):
         self.replay_times = np.empty(0, dtype=np.float64)
         self.replay_duration = 0.0
         self.current_replay_time = 0.0
-        opti_origin = list(self.declare_parameter("opti_origin", [1.4, 1.4, 0.0]).value)
+        opti_origin = list(self.declare_parameter("opti_origin", [1.4, 1.4, 0.15]).value)
         if len(opti_origin) != 3:
-            self.get_logger().warning("opti_origin must have 3 values. Falling back to [1.4, 1.4, 0.0].")
-            opti_origin = [1.4, 1.4, 0.0]
+            self.get_logger().warning("opti_origin must have 3 values. Falling back to [1.4, 1.4, 0.15].")
+            opti_origin = [1.4, 1.4, 0.15]
         self.opti_origin = np.array(opti_origin, dtype=np.float64)
 
         log_enabled = bool(self.declare_parameter("log_enabled", True).value)

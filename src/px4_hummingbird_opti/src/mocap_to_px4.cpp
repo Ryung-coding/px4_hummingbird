@@ -25,7 +25,7 @@ public:
     const std::string pub_px4_topic = this->declare_parameter<std::string>("output_topic", "/fmu/in/vehicle_visual_odometry");
 
     target_body_name_ = this->declare_parameter<std::string>("target_body_name", "hummingbird");
-    const std::vector<double> opti_origin = this->declare_parameter<std::vector<double>>("opti_origin", {0.0, 0.0, 0.0});
+    const std::vector<double> opti_origin = this->declare_parameter<std::vector<double>>("opti_origin", {1.4, 1.4, 0.15});
     if (opti_origin.size() == 3) { opti_origin_ = Eigen::Vector3d(opti_origin[0], opti_origin[1], opti_origin[2]); }
 
     const double position_stddev_m = this->declare_parameter<double>("position_stddev", 0.02);
@@ -87,7 +87,7 @@ private:
   float orientation_variance_{0.0F};
   int quality_{100};
   std::string target_body_name_{"hummingbird"};
-  Eigen::Vector3d opti_origin_{0.0, 0.0, 0.0};
+  Eigen::Vector3d opti_origin_{1.4, 1.4, 0.15};
 };
 
 
