@@ -274,6 +274,15 @@ float RCUpdate::get_rc_value(uint8_t func, float min_value, float max_value) con
 void RCUpdate::set_params_from_rc()
 {
 	for (int i = 0; i < rc_parameter_map_s::RC_PARAM_MAP_NCHAN; i++) {
+		if (_rc.function[rc_channels_s::FUNCTION_PARAM_1 + i] >= 0 && !_rc_parameter_map.valid[i] && i < 2) {
+			_parameter_handles.rc_param[i] = param_find(i == 0 ? "HB_CTRL_MODE" : "HB_CMD_SOURCE");
+			_rc_parameter_map.valid[i] = _parameter_handles.rc_param[i] != PARAM_INVALID;
+			_rc_parameter_map.value0[i] = 0.5f;
+			_rc_parameter_map.scale[i] = 0.5f;
+			_rc_parameter_map.value_min[i] = 0.f;
+			_rc_parameter_map.value_max[i] = 1.f;
+		}
+
 		if (_rc.function[rc_channels_s::FUNCTION_PARAM_1 + i] < 0 || !_rc_parameter_map.valid[i]) {
 			/* This RC channel is not mapped to a RC-Parameter Channel (e.g. RC_MAP_PARAM1 == 0)
 			 * or no request to map this channel to a param has been sent via mavlink
@@ -291,7 +300,13 @@ void RCUpdate::set_params_from_rc()
 						  _rc_parameter_map.value0[i] + _rc_parameter_map.scale[i] * rc_val,
 						  _rc_parameter_map.value_min[i], _rc_parameter_map.value_max[i]);
 
-			param_set(_parameter_handles.rc_param[i], &param_val);
+			if (param_type(_parameter_handles.rc_param[i]) == PARAM_TYPE_INT32) {
+				const int32_t param_val_int = static_cast<int32_t>(roundf(param_val));
+				param_set(_parameter_handles.rc_param[i], &param_val_int);
+
+			} else {
+				param_set(_parameter_handles.rc_param[i], &param_val);
+			}
 		}
 	}
 }

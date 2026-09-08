@@ -13,12 +13,15 @@ PX4_SIM_MODEL=${PX4_SIM_MODEL:=hummingbird}
 
 param set-default SIM_GZ_EN 1
 
+# Gazebo has no real ESC arming telemetry; keep ESC arming checks out of SITL only.
+param set FD_ESCS_EN 0
+param set COM_ARM_CHK_ESCS 0
+
 param set-default SIM_GPS_USED 10
 param set-default SYS_HAS_GPS 1
 param set-default EKF2_EV_CTRL 0
 param set-default EKF2_GPS_CTRL 7
 param set-default EKF2_HGT_REF 0
-param set-default EKF2_IMU_POS_Z -0.05
 
 param set CA_AIRFRAME 16
 param set-default HB_CTRL_MODE 0
