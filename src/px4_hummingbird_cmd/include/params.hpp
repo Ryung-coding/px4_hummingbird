@@ -40,7 +40,7 @@ static constexpr double att_tol = 5.0 * M_PI / 180.0;
 
 // Task parameters -----------------------------------------------
 static constexpr double ROLL_MAX = 0.0 * M_PI / 180.0;
-static constexpr double PITCH_MAX = 20.0 * M_PI / 180.0;
+static constexpr double PITCH_MAX = 50.0 * M_PI / 180.0;
 
 // Common servo parameters -----------------------------------------------
 static constexpr double BETA_LIMIT_RAD = M_PI;
