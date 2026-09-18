@@ -32,6 +32,9 @@ public:
       throw std::runtime_error("Dynamixel initialization failed");
     }
 
+    demo_beta_lpf_.reset(0.0);
+    demo_alpha_lpf_.reset(0.0);
+
     last_odometry_time_ = this->now();
 
     odometry_sub_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>("/fmu/out/vehicle_odometry", rclcpp::SensorDataQoS(), std::bind(&Demo::odometry_callback, this, std::placeholders::_1));
@@ -331,41 +334,25 @@ private:
       return;
     }
 
-    const bool axis_hold_active = lie_group_rotation_.axisHoldActive();
-
-    if (axis_hold_active != axis_hold_active_)
-    {
-      if (axis_hold_active)
-      {
-        RCLCPP_WARN(this->get_logger(), "SO(3) inversion-axis hold active");
-      }
-      else
-      {
-        RCLCPP_INFO(this->get_logger(), "SO(3) inversion-axis hold released");
-      }
-
-      axis_hold_active_ = axis_hold_active;
-    }
-
     // The current servo directions convert the shared beta command into
     // [-lie_pitch, +lie_pitch] at the two pitch Dynamixels.
-    const double beta_cmd = std::clamp(
-      -target.pitch,
-      -params::BETA_LIMIT_RAD,
-      params::BETA_LIMIT_RAD
-    );
-    const double alpha_cmd = std::clamp(
-      target.roll,
-      -params::ALPHA_LIMIT_RAD,
-      params::ALPHA_LIMIT_RAD
-    );
+    const double beta_cmd = demo_beta_lpf_.update(-target.pitch);
+    const double alpha_cmd = demo_alpha_lpf_.update(target.roll);
 
     std::array<int32_t, params::DXL_SERVOS.size()> goal_ppr{};
 
     for (std::size_t i = 0; i < params::DXL_SERVOS.size(); ++i)
     {
       const auto & servo = params::DXL_SERVOS[i];
-      const double rad = (i < 2) ? beta_cmd : alpha_cmd;
+
+      const double angle_limit =
+        (i < 2) ? 170.0 * M_PI / 180.0 : params::ALPHA_LIMIT_RAD;
+
+      const double rad = std::clamp(
+        (i < 2) ? beta_cmd : alpha_cmd,
+        -angle_limit,
+        angle_limit
+      );
 
       goal_ppr[i] = std::clamp(
         static_cast<int32_t>(
@@ -408,6 +395,9 @@ private:
       if (rclcpp::ok()) rclcpp::shutdown();
       return;
     }
+
+    demo_beta_lpf_.reset(0.0);
+    demo_alpha_lpf_.reset(0.0);
 
     timeout_zero_sent_ = true;
   }
@@ -466,6 +456,8 @@ private:
   std::unique_ptr<dynamixel::GroupSyncWrite> sync_write_;
 
   std::array<utils::LPF, params::DXL_SERVOS.size()> startup_lpf_;
+  utils::LPF demo_beta_lpf_{0.2};
+  utils::LPF demo_alpha_lpf_{0.2};
   utils::LieGroupRotation lie_group_rotation_;
 
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odometry_sub_;
@@ -475,7 +467,6 @@ private:
   bool odometry_received_ = false;
   bool timeout_zero_sent_ = true;
   bool emergency_active_ = false;
-  bool axis_hold_active_ = false;
 };
 
 int main(int argc, char ** argv)

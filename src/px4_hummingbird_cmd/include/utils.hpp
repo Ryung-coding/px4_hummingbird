@@ -88,10 +88,7 @@ public:
       return true;
     }
 
-    const double tilt_angle = std::min(
-      std::atan2(cross_norm, z_z_body),
-      params::BETA_LIMIT_RAD
-    );
+    const double tilt_angle = std::min(std::atan2(cross_norm, z_z_body),170.0 * M_PI / 180.0); // limit to avoid singularity
     const double axis_x = z_y_body / cross_norm;
     const double axis_y = -z_x_body / cross_norm;
 
