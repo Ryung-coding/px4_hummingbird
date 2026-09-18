@@ -43,7 +43,7 @@ static constexpr double ROLL_MAX = 0.0 * M_PI / 180.0;
 static constexpr double PITCH_MAX = 50.0 * M_PI / 180.0;
 
 // Common servo parameters -----------------------------------------------
-static constexpr double BETA_LIMIT_RAD = M_PI;
+static constexpr double BETA_LIMIT_RAD = 170.0 * M_PI / 180.0;
 static constexpr double ALPHA_LIMIT_RAD = M_PI / 6.0;
 
 static constexpr double SERVO_TIMEOUT_SEC = 0.2;

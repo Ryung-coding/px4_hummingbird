@@ -23,6 +23,10 @@ add_executable(px4_servo_to_dynamixel
   src/px4_servo_to_dynamixel.cpp
 )
 
+add_executable(demo
+  src/demo.cpp
+)
+
 target_include_directories(px4_position_cmd PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
@@ -31,11 +35,20 @@ target_include_directories(px4_servo_to_dynamixel PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+target_include_directories(demo PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 target_link_libraries(px4_position_cmd
   Eigen3::Eigen
 )
 
 target_link_libraries(px4_servo_to_dynamixel
+  Eigen3::Eigen
+  dynamixel_sdk::dynamixel_sdk
+)
+
+target_link_libraries(demo
   Eigen3::Eigen
   dynamixel_sdk::dynamixel_sdk
 )
@@ -51,9 +64,15 @@ ament_target_dependencies(px4_servo_to_dynamixel
   px4_msgs
 )
 
+ament_target_dependencies(demo
+  rclcpp
+  px4_msgs
+)
+
 install(TARGETS
   px4_position_cmd
   px4_servo_to_dynamixel
+  demo
   DESTINATION lib/${PROJECT_NAME}
 )
 

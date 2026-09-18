@@ -54,6 +54,53 @@ struct TargetCMD {
   double yaw = 0.0;
 };
 
+class LieGroupRotation
+{
+public:
+  bool update(const Eigen::Vector4d& quaternion, TargetCMD& target) const
+  {
+    if (!quaternion.allFinite()) return false;
+
+    const double norm = quaternion.norm();
+
+    if (norm < 1.0e-9) return false;
+
+    const Eigen::Vector4d q = quaternion / norm;
+    const double w = q(0);
+    const double x = q(1);
+    const double y = q(2);
+    const double z = q(3);
+
+    // VehicleOdometry.q is a passive body-to-world rotation. These are the
+    // world z-axis components expressed in the body frame.
+    const double z_x_body = 2.0 * (x * z - w * y);
+    const double z_y_body = 2.0 * (y * z + w * x);
+    const double z_z_body = 1.0 - 2.0 * (x * x + y * y);
+
+    const double cross_norm = std::hypot(z_x_body, z_y_body);
+
+    if (cross_norm <= 1.0e-9)
+    {
+      if (z_z_body < 0.0) return false;
+
+      target.roll = 0.0;
+      target.pitch = 0.0;
+      return true;
+    }
+
+    const double tilt_angle = std::min(
+      std::atan2(cross_norm, z_z_body),
+      params::BETA_LIMIT_RAD
+    );
+    const double axis_x = z_y_body / cross_norm;
+    const double axis_y = -z_x_body / cross_norm;
+
+    target.roll = tilt_angle * axis_x;
+    target.pitch = tilt_angle * axis_y;
+    return std::isfinite(target.roll) && std::isfinite(target.pitch);
+  }
+};
+
 struct HandoffFilters {
   LPF x{params::handoff_runtime};
   LPF y{params::handoff_runtime};
