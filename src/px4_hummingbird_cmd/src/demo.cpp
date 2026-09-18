@@ -334,10 +334,8 @@ private:
       return;
     }
 
-    // The current servo directions convert the shared beta command into
-    // [-lie_pitch, +lie_pitch] at the two pitch Dynamixels.
     const double beta_cmd = demo_beta_lpf_.update(-target.pitch);
-    const double alpha_cmd = demo_alpha_lpf_.update(target.roll);
+    const double alpha_cmd = demo_alpha_lpf_.update(-target.roll);
 
     std::array<int32_t, params::DXL_SERVOS.size()> goal_ppr{};
 
@@ -456,8 +454,8 @@ private:
   std::unique_ptr<dynamixel::GroupSyncWrite> sync_write_;
 
   std::array<utils::LPF, params::DXL_SERVOS.size()> startup_lpf_;
-  utils::LPF demo_beta_lpf_{0.2};
-  utils::LPF demo_alpha_lpf_{0.2};
+  utils::LPF demo_beta_lpf_{0.01};
+  utils::LPF demo_alpha_lpf_{0.01};
   utils::LieGroupRotation lie_group_rotation_;
 
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odometry_sub_;
