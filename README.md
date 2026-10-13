@@ -1,62 +1,75 @@
-# PX4 Drone Autopilot
+# PX4 HummingBird
 
-[![Releases](https://img.shields.io/github/release/PX4/PX4-Autopilot.svg)](https://github.com/PX4/PX4-Autopilot/releases) [![DOI](https://zenodo.org/badge/22634/PX4/PX4-Autopilot.svg)](https://zenodo.org/badge/latestdoi/22634/PX4/PX4-Autopilot)
+PX4 v1.17 기반 HummingBird 비행제어 및 Gazebo SITL 환경입니다. Underactuated / Fully Actuated 제어와 RC / DDS 명령 입력을 지원합니다.
 
-[![Build Targets](https://github.com/PX4/PX4-Autopilot/actions/workflows/build_all_targets.yml/badge.svg?branch=main)](https://github.com/PX4/PX4-Autopilot/actions/workflows/build_all_targets.yml) [![SITL Tests](https://github.com/PX4/PX4-Autopilot/workflows/SITL%20Tests/badge.svg?branch=master)](https://github.com/PX4/PX4-Autopilot/actions?query=workflow%3A%22SITL+Tests%22)
+## 1. Simulation 실행
 
-[![Discord Shield](https://discordapp.com/api/guilds/1022170275984457759/widget.png?style=shield)](https://discord.gg/dronecode)
+`HB_v1.17` 브랜치의 **PX4 프로젝트 루트 디렉터리**에서 실행합니다.
 
-This repository holds the [PX4](http://px4.io) flight control solution for drones, with the main applications located in the [src/modules](https://github.com/PX4/PX4-Autopilot/tree/main/src/modules) directory. It also contains the PX4 Drone Middleware Platform, which provides drivers and middleware to run drones.
+```bash
+make px4_sitl gz_hummingbird
+```
 
-PX4 is highly portable, OS-independent and supports Linux, NuttX and MacOS out of the box.
+별도 터미널에서 **QGroundControl (QGC)** 을 실행하여 기체 상태를 확인합니다.
 
-* Official Website: http://px4.io (License: BSD 3-clause, [LICENSE](https://github.com/PX4/PX4-Autopilot/blob/main/LICENSE))
-* [Supported airframes](https://docs.px4.io/main/en/airframes/airframe_reference.html) ([portfolio](https://px4.io/ecosystem/commercial-systems/)):
-  * [Multicopters](https://docs.px4.io/main/en/frames_multicopter/)
-  * [Fixed wing](https://docs.px4.io/main/en/frames_plane/)
-  * [VTOL](https://docs.px4.io/main/en/frames_vtol/)
-  * [Autogyro](https://docs.px4.io/main/en/frames_autogyro/)
-  * [Rover](https://docs.px4.io/main/en/frames_rover/)
-  * many more experimental types (Blimps, Boats, Submarines, High Altitude Balloons, Spacecraft, etc)
-* Releases: [Downloads](https://github.com/PX4/PX4-Autopilot/releases)
+## 2. ROS 2 연동
 
-## Releases
+[ros2-ws 브랜치](https://github.com/Ryung-coding/px4_hummingbird/tree/ros2-ws)를 별도로 다운로드하고 빌드합니다. ROS 2 Jazzy 환경에서 다음을 각각 실행합니다.
 
-Release notes and supporting information for PX4 releases can be found on the [Developer Guide](https://docs.px4.io/main/en/releases/).
+**DDS Agent** (`ros2-ws` 루트):
 
-## Building a PX4 based drone, rover, boat or robot
+```bash
+./run_agent.sh
+```
 
-The [PX4 User Guide](https://docs.px4.io/main/en/) explains how to assemble [supported vehicles](https://docs.px4.io/main/en/airframes/airframe_reference.html) and fly drones with PX4. See the [forum and chat](https://docs.px4.io/main/en/#getting-help) if you need help!
+**ROS 2 Command + Gazebo Servo Bridge** (`ros2-ws` 환경 설정 후):
 
+```bash
+source install/setup.bash
+ros2 launch px4_hummingbird_cmd auto_run_gz.launch.py path:=pos
+```
 
-## Changing Code and Contributing
+지원하는 `path` 옵션:
 
-This [Developer Guide](https://docs.px4.io/main/en/development/development.html) is for software developers who want to modify the flight stack and middleware (e.g. to add new flight modes), hardware integrators who want to support new flight controller boards and peripherals, and anyone who wants to get PX4 working on a new (unsupported) airframe/vehicle.
+| Path | 설명 |
+| --- | --- |
+| `pos` | Position Trajectory |
+| `att` | Attitude Trajectory |
+| `step_att` | Attitude Step Response |
 
-Developers should read the [Guide for Contributions](https://docs.px4.io/main/en/contribute/).
-See the [forum and chat](https://docs.px4.io/main/en/#getting-help) if you need help!
+실행 예시:
 
+```bash
+ros2 launch px4_hummingbird_cmd auto_run_gz.launch.py path:=att
+ros2 launch px4_hummingbird_cmd auto_run_gz.launch.py path:=step_att
+```
 
-## Weekly Dev Call
+ROS 2 Workspace는 PX4의 **EKF Position**을 수신하고, **Position / Attitude Command**를 전달하며, **Servo Angle**을 받아 Gazebo로 출력합니다.
 
-The PX4 Dev Team syncs up on a [weekly dev call](https://docs.px4.io/main/en/contribute/).
+## 3. HummingBird Parameters
 
-> **Note** The dev call is open to all interested developers (not just the core dev team). This is a great opportunity to meet the team and contribute to the ongoing development of the platform. It includes a QA session for newcomers. All regular calls are listed in the [Dronecode calendar](https://www.dronecode.org/calendar/).
+QGC의 **Parameters** 메뉴에서 `HB_`를 검색하여 설정합니다.
 
+| Parameter | 기능 |
+| --- | --- |
+| `HB_CTRL_MODE` | Underactuated / Fully Actuated 제어 선택 |
+| `HB_CMD_SOURCE` | RC / DDS 명령 입력 선택 |
 
-## Maintenance Team
+- **Underactuated:** 일반 Quadrotor처럼 자세를 기울여 위치를 제어합니다.
+- **Fully Actuated:** Tilt Servo를 활용하여 위치와 자세를 독립적으로 제어합니다.
 
-See the latest list of maintainers on [MAINTAINERS](MAINTAINERS.md) file at the root of the project.
+기본 설정은 `HB_CTRL_MODE = 0`, `HB_CMD_SOURCE = 0`입니다.
 
-For the latest stats on contributors please see the latest stats for the Dronecode ecosystem in our project dashboard under [LFX Insights](https://insights.lfx.linuxfoundation.org/foundation/dronecode). For information on how to update your profile and affiliations please see the following support link on how to [Complete Your LFX Profile](https://docs.linuxfoundation.org/lfx/my-profile/complete-your-lfx-profile). Dronecode publishes a yearly snapshot of contributions and achievements on its [website under the Reports section](https://dronecode.org).
+## 4. DDS Command
 
-## Supported Hardware
+ROS 2에서 사용하는 주요 PX4 Topic은 다음과 같습니다.
 
-For the most up to date information, please visit [PX4 User Guide > Autopilot Hardware](https://docs.px4.io/main/en/flight_controller/).
+| Topic | 기능 |
+| --- | --- |
+| `/fmu/in/offboard_control_mode` | Offboard 제어 모드 지정 |
+| `/fmu/in/trajectory_setpoint6dof` | Position / Attitude Setpoint 전달 |
+| `/fmu/in/vehicle_command` | Arm / Mode 변경 |
+| `/fmu/out/vehicle_local_position` | EKF 추정 위치 수신 |
+| `/fmu/out/actuator_servos` | Servo 출력 수신 |
 
-## Project Governance
-
-The PX4 Autopilot project including all of its trademarks is hosted under [Dronecode](https://www.dronecode.org/), part of the Linux Foundation.
-
-<a href="https://www.dronecode.org/" style="padding:20px" ><img src="https://dronecode.org/wp-content/uploads/sites/24/2020/08/dronecode_logo_default-1.png" alt="Dronecode Logo" width="110px"/></a>
-<div style="padding:10px">&nbsp;</div>
+`px4_position_cmd.launch.py`는 Command만 실행하며, SITL에서는 Command와 Servo Bridge를 함께 실행하는 `auto_run_gz.launch.py`를 사용합니다.
