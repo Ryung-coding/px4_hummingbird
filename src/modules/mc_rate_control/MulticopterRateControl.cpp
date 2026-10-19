@@ -32,6 +32,7 @@
  ****************************************************************************/
 
 #include "MulticopterRateControl.hpp"
+#include "../hummingbird_underactuated_gains.hpp"
 
 #include <drivers/drv_hrt.h>
 #include <circuit_breaker/circuit_breaker.h>
@@ -73,24 +74,52 @@ MulticopterRateControl::init()
 }
 
 void
-MulticopterRateControl::parameters_updated()
+MulticopterRateControl::applyControllerGains()
 {
-	// rate control parameters
-	// The controller gain K is used to convert the parallel (P + I/s + sD) form
-	// to the ideal (K * [1 + 1/sTi + sTd]) form
-	const Vector3f rate_k = Vector3f(_param_mc_rollrate_k.get(), _param_mc_pitchrate_k.get(), _param_mc_yawrate_k.get());
+	using namespace hummingbird_underactuated_gains;
+	const float fraction = _underactuated_gain_fraction;
+	const Vector3f rate_k(
+		blend(_param_mc_rollrate_k.get(), kRateRollK, fraction),
+		blend(_param_mc_pitchrate_k.get(), kRatePitchK, fraction),
+		blend(_param_mc_yawrate_k.get(), kRateYawK, fraction));
 
 	_rate_control.setPidGains(
-		rate_k.emult(Vector3f(_param_mc_rollrate_p.get(), _param_mc_pitchrate_p.get(), _param_mc_yawrate_p.get())),
-		rate_k.emult(Vector3f(_param_mc_rollrate_i.get(), _param_mc_pitchrate_i.get(), _param_mc_yawrate_i.get())),
-		rate_k.emult(Vector3f(_param_mc_rollrate_d.get(), _param_mc_pitchrate_d.get(), _param_mc_yawrate_d.get())));
+		rate_k.emult(Vector3f(blend(_param_mc_rollrate_p.get(), kRateRollP, fraction),
+					 blend(_param_mc_pitchrate_p.get(), kRatePitchP, fraction),
+					 blend(_param_mc_yawrate_p.get(), kRateYawP, fraction))),
+		rate_k.emult(Vector3f(blend(_param_mc_rollrate_i.get(), kRateRollI, fraction),
+					 blend(_param_mc_pitchrate_i.get(), kRatePitchI, fraction),
+					 blend(_param_mc_yawrate_i.get(), kRateYawI, fraction))),
+		rate_k.emult(Vector3f(blend(_param_mc_rollrate_d.get(), kRateRollD, fraction),
+					 blend(_param_mc_pitchrate_d.get(), kRatePitchD, fraction),
+					 blend(_param_mc_yawrate_d.get(), kRateYawD, fraction))));
 
-	_rate_control.setIntegratorLimit(
-		Vector3f(_param_mc_rr_int_lim.get(), _param_mc_pr_int_lim.get(), _param_mc_yr_int_lim.get()));
+	_rate_control.setIntegratorLimit(Vector3f(
+		blend(_param_mc_rr_int_lim.get(), kRateRollIntegralLimit, fraction),
+		blend(_param_mc_pr_int_lim.get(), kRatePitchIntegralLimit, fraction),
+		blend(_param_mc_yr_int_lim.get(), kRateYawIntegralLimit, fraction)));
 
-	_rate_control.setFeedForwardGain(
-		Vector3f(_param_mc_rollrate_ff.get(), _param_mc_pitchrate_ff.get(), _param_mc_yawrate_ff.get()));
+	_rate_control.setFeedForwardGain(Vector3f(
+		blend(_param_mc_rollrate_ff.get(), kRateRollFF, fraction),
+		blend(_param_mc_pitchrate_ff.get(), kRatePitchFF, fraction),
+		blend(_param_mc_yawrate_ff.get(), kRateYawFF, fraction)));
+}
 
+void
+MulticopterRateControl::parameters_updated()
+{
+	const float gain_target = (_param_ca_airframe.get() == hummingbird_underactuated_gains::kAirframe
+				   && _param_hb_ctrl_mode.get() == hummingbird_underactuated_gains::kUnderactuatedMode) ? 1.f : 0.f;
+
+	if (_underactuated_gain_fraction < 0.f) {
+		_underactuated_gain_fraction = gain_target;
+
+	} else if ((gain_target > 0.5f) != (_underactuated_gain_target > 0.5f)) {
+		_gain_profile_switched = true;
+	}
+
+	_underactuated_gain_target = gain_target;
+	applyControllerGains();
 
 	// manual rate control acro mode rate limits
 	_acro_rate_max = Vector3f(radians(_param_mc_acro_r_max.get()), radians(_param_mc_acro_p_max.get()),
@@ -136,6 +165,20 @@ MulticopterRateControl::Run()
 
 		/* check for updates in other topics */
 		_vehicle_control_mode_sub.update(&_vehicle_control_mode);
+
+		if (_gain_profile_switched) {
+			// The integral is already in torque units; retain it in flight to avoid a torque step.
+			if (!_vehicle_control_mode.flag_armed) {
+				_rate_control.resetIntegral();
+			}
+
+			_gain_profile_switched = false;
+		}
+
+		const float gain_step = dt / hummingbird_underactuated_gains::kTransitionTimeS;
+		_underactuated_gain_fraction += math::constrain(_underactuated_gain_target - _underactuated_gain_fraction,
+								   -gain_step, gain_step);
+		applyControllerGains();
 
 		if (_vehicle_land_detected_sub.updated()) {
 			vehicle_land_detected_s vehicle_land_detected;

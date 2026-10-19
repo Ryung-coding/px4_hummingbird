@@ -45,7 +45,7 @@
  * Roll proportional gain, i.e. desired angular speed in rad/s for error 1 rad.
  *
  * @min 0.0
- * @max 12
+ * @max 60
  * @decimal 2
  * @increment 0.1
  * @group Multicopter Attitude Control
@@ -58,7 +58,7 @@ PARAM_DEFINE_FLOAT(MC_ROLL_P, 4.0f);
  * Pitch proportional gain, i.e. desired angular speed in rad/s for error 1 rad.
  *
  * @min 0.0
- * @max 12
+ * @max 60
  * @decimal 2
  * @increment 0.1
  * @group Multicopter Attitude Control
@@ -71,7 +71,7 @@ PARAM_DEFINE_FLOAT(MC_PITCH_P, 4.0f);
  * Yaw proportional gain, i.e. desired angular speed in rad/s for error 1 rad.
  *
  * @min 0.0
- * @max 5
+ * @max 25
  * @decimal 2
  * @increment 0.1
  * @group Multicopter Attitude Control

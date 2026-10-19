@@ -32,6 +32,7 @@
  ****************************************************************************/
 
 #include "MulticopterPositionControl.hpp"
+#include "../hummingbird_underactuated_gains.hpp"
 
 #include <float.h>
 #include <lib/mathlib/mathlib.h>
@@ -68,6 +69,27 @@ bool MulticopterPositionControl::init()
 	ScheduleNow();
 
 	return true;
+}
+
+void MulticopterPositionControl::applyControllerGains()
+{
+	using namespace hummingbird_underactuated_gains;
+	const float fraction = _underactuated_gain_fraction;
+
+	_control.setPositionGains(Vector3f(
+		blend(_param_mpc_xy_p.get(), kPositionXyP, fraction),
+		blend(_param_mpc_xy_p.get(), kPositionXyP, fraction),
+		blend(_param_mpc_z_p.get(), kPositionZP, fraction)));
+	_control.setVelocityGains(
+		Vector3f(blend(_param_mpc_xy_vel_p_acc.get(), kVelocityXyP, fraction),
+			 blend(_param_mpc_xy_vel_p_acc.get(), kVelocityXyP, fraction),
+			 blend(_param_mpc_z_vel_p_acc.get(), kVelocityZP, fraction)),
+		Vector3f(blend(_param_mpc_xy_vel_i_acc.get(), kVelocityXyI, fraction),
+			 blend(_param_mpc_xy_vel_i_acc.get(), kVelocityXyI, fraction),
+			 blend(_param_mpc_z_vel_i_acc.get(), kVelocityZI, fraction)),
+		Vector3f(blend(_param_mpc_xy_vel_d_acc.get(), kVelocityXyD, fraction),
+			 blend(_param_mpc_xy_vel_d_acc.get(), kVelocityXyD, fraction),
+			 blend(_param_mpc_z_vel_d_acc.get(), kVelocityZD, fraction)));
 }
 
 void MulticopterPositionControl::parameters_update(bool force)
@@ -193,11 +215,18 @@ void MulticopterPositionControl::parameters_update(bool force)
 					    "Land tilt limit has been constrained by maximum tilt", _param_mpc_tiltmax_air.get());
 		}
 
-		_control.setPositionGains(Vector3f(_param_mpc_xy_p.get(), _param_mpc_xy_p.get(), _param_mpc_z_p.get()));
-		_control.setVelocityGains(
-			Vector3f(_param_mpc_xy_vel_p_acc.get(), _param_mpc_xy_vel_p_acc.get(), _param_mpc_z_vel_p_acc.get()),
-			Vector3f(_param_mpc_xy_vel_i_acc.get(), _param_mpc_xy_vel_i_acc.get(), _param_mpc_z_vel_i_acc.get()),
-			Vector3f(_param_mpc_xy_vel_d_acc.get(), _param_mpc_xy_vel_d_acc.get(), _param_mpc_z_vel_d_acc.get()));
+		const float gain_target = (_param_ca_airframe.get() == hummingbird_underactuated_gains::kAirframe
+				   && _param_hb_ctrl_mode.get() == hummingbird_underactuated_gains::kUnderactuatedMode) ? 1.f : 0.f;
+
+		if (_underactuated_gain_fraction < 0.f) {
+			_underactuated_gain_fraction = gain_target;
+
+		} else if ((gain_target > 0.5f) != (_underactuated_gain_target > 0.5f)) {
+			_gain_profile_switched = true;
+		}
+
+		_underactuated_gain_target = gain_target;
+		applyControllerGains();
 		_control.setHorizontalThrustMargin(_param_mpc_thr_xy_marg.get());
 		_control.decoupleHorizontalAndVecticalAcceleration(_param_mpc_acc_decouple.get());
 		_goto_control.setParamMpcAccHor(_param_mpc_acc_hor.get());
@@ -411,6 +440,20 @@ void MulticopterPositionControl::Run()
 				}
 			}
 		}
+
+		if (_gain_profile_switched) {
+			// The integral is already in acceleration units; retain it in flight to avoid a thrust step.
+			if (!_vehicle_control_mode.flag_armed) {
+				_control.resetIntegral();
+			}
+
+			_gain_profile_switched = false;
+		}
+
+		const float gain_step = dt / hummingbird_underactuated_gains::kTransitionTimeS;
+		_underactuated_gain_fraction += math::constrain(_underactuated_gain_target - _underactuated_gain_fraction,
+								   -gain_step, gain_step);
+		applyControllerGains();
 
 		_vehicle_land_detected_sub.update(&_vehicle_land_detected);
 

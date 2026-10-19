@@ -44,6 +44,7 @@
  */
 
 #include "mc_att_control.hpp"
+#include "../hummingbird_underactuated_gains.hpp"
 
 #include <drivers/drv_hrt.h>
 #include <mathlib/math/Limits.hpp>
@@ -92,11 +93,30 @@ MulticopterAttitudeControl::init()
 }
 
 void
+MulticopterAttitudeControl::applyControllerGains()
+{
+	using namespace hummingbird_underactuated_gains;
+	const float fraction = _underactuated_gain_fraction;
+
+	_attitude_control.setProportionalGain(
+		Vector3f(blend(_param_mc_roll_p.get(), kAttitudeRollP, fraction),
+			 blend(_param_mc_pitch_p.get(), kAttitudePitchP, fraction),
+			 blend(_param_mc_yaw_p.get(), kAttitudeYawP, fraction)),
+		blend(_param_mc_yaw_weight.get(), kAttitudeYawWeight, fraction));
+}
+
+void
 MulticopterAttitudeControl::parameters_updated()
 {
-	// Store some of the parameters in a more convenient way & precompute often-used values
-	_attitude_control.setProportionalGain(Vector3f(_param_mc_roll_p.get(), _param_mc_pitch_p.get(), _param_mc_yaw_p.get()),
-					      _param_mc_yaw_weight.get());
+	const float gain_target = (_param_ca_airframe.get() == kHummingBirdAirframe
+				   && _param_hb_ctrl_mode.get() == hummingbird_underactuated_gains::kUnderactuatedMode) ? 1.f : 0.f;
+
+	if (_underactuated_gain_fraction < 0.f) {
+		_underactuated_gain_fraction = gain_target;
+	}
+
+	_underactuated_gain_target = gain_target;
+	applyControllerGains();
 
 	// angular rate limits
 	using math::radians;
@@ -304,6 +324,11 @@ MulticopterAttitudeControl::Run()
 		/* check for updates in other topics */
 		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
 		_vehicle_control_mode_sub.update(&_vehicle_control_mode);
+
+		const float gain_step = dt / hummingbird_underactuated_gains::kTransitionTimeS;
+		_underactuated_gain_fraction += math::constrain(_underactuated_gain_target - _underactuated_gain_fraction,
+								   -gain_step, gain_step);
+		applyControllerGains();
 
 		if (_vehicle_status_sub.updated()) {
 			vehicle_status_s vehicle_status;

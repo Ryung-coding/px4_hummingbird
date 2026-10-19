@@ -88,6 +88,7 @@ private:
 	 * initialize some vectors/matrices from parameters
 	 */
 	void parameters_updated();
+	void applyControllerGains();
 
 	float throttle_curve(float throttle_stick_input);
 
@@ -104,7 +105,7 @@ private:
 	AttitudeControl _attitude_control; /**< class for attitude control calculations */
 	StickYaw _stick_yaw{this};
 
-	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
+	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 100_ms};
 
 	uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
 	uORB::Subscription _vehicle_attitude_setpoint_sub{ORB_ID(vehicle_attitude_setpoint)};
@@ -150,6 +151,8 @@ private:
 	bool _vtol_tailsitter{false};
 	bool _vtol_in_transition_mode{false};
 	bool _navigation_state_stabilized{false};
+	float _underactuated_gain_fraction{-1.f};
+	float _underactuated_gain_target{0.f};
 
 	uint8_t _quat_reset_counter{0};
 

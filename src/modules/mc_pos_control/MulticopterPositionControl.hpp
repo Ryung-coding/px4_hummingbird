@@ -93,6 +93,7 @@ public:
 
 private:
 	void Run() override;
+	void applyControllerGains();
 
 	TakeoffHandling _takeoff; /**< state machine and ramp to bring the vehicle off the ground without jumps */
 
@@ -105,7 +106,7 @@ private:
 
 	uORB::SubscriptionCallbackWorkItem _local_pos_sub{this, ORB_ID(vehicle_local_position)};	/**< vehicle local position */
 
-	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
+	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 100_ms};
 
 	uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
@@ -216,6 +217,9 @@ private:
 
 	GotoControl _goto_control; ///< class for handling smooth goto position setpoints
 	PositionControl _control; ///< class for core PID position control
+	float _underactuated_gain_fraction{-1.f};
+	float _underactuated_gain_target{0.f};
+	bool _gain_profile_switched{false};
 
 	hrt_abstime _last_warn{0}; /**< timer when the last warn message was sent out */
 	hrt_abstime _last_hummingbird_status_pub{0};
