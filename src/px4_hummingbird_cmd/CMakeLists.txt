@@ -13,6 +13,9 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+# Load the ROS vendor packages before looking up their Gazebo libraries.
+find_package(gz_msgs_vendor REQUIRED)
+find_package(gz_transport_vendor REQUIRED)
 find_package(gz-msgs10 REQUIRED)
 find_package(gz-transport13 REQUIRED)
 

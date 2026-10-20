@@ -11,6 +11,7 @@ PX4 SITL은 [HB_v1.17](https://github.com/Ryung-coding/px4_hummingbird/tree/HB_v
 ```bash
 git clone -b ros2-ws https://github.com/Ryung-coding/px4_hummingbird.git
 cd px4_hummingbird
+sudo apt install ros-jazzy-gz-msgs-vendor ros-jazzy-gz-transport-vendor
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 source install/setup.bash
