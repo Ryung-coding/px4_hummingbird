@@ -67,6 +67,9 @@ subscriptions:
   - topic: /fmu/in/vehicle_visual_odometry
     type: px4_msgs::msg::VehicleOdometry
 
+  - topic: /fmu/in/actuator_motors
+    type: px4_msgs::msg::ActuatorMotors
+
   # Optional command/debug inputs kept disabled for onboard use.
   # - topic: /fmu/in/trajectory_setpoint
   #   type: px4_msgs::msg::TrajectorySetpoint
@@ -78,8 +81,6 @@ subscriptions:
   #   type: px4_msgs::msg::VehicleThrustSetpoint
   # - topic: /fmu/in/vehicle_torque_setpoint
   #   type: px4_msgs::msg::VehicleTorqueSetpoint
-  # - topic: /fmu/in/actuator_motors
-  #   type: px4_msgs::msg::ActuatorMotors
   # - topic: /fmu/in/actuator_servos
   #   type: px4_msgs::msg::ActuatorServos
 

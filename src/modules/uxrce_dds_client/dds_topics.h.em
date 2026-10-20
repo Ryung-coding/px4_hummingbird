@@ -25,6 +25,11 @@ import os
 #include <uORB/Publication.hpp>
 #include <uORB/PublicationMulti.hpp>
 #include <uORB/uORB.h>
+@[if any(sub['topic_simple'] == 'actuator_motors' for sub in subscriptions)]@
+#include <drivers/drv_hrt.h>
+#include <uORB/Subscription.hpp>
+#include <uORB/topics/vehicle_control_mode.h>
+@[end if]@
 @[for include in type_includes]@
 #include <uORB/ucdr/@(include).h>
 #include <uORB/topics/@(include).h>
@@ -183,6 +188,34 @@ static void on_topic_update(uxrSession *session, uxrObjectId object_id, uint16_t
 
 			if (ucdr_deserialize_@(sub['simple_base_type'])(*ub, data, time_offset_us)) {
 				//print_message(ORB_ID(@(sub['simple_base_type'])), data);
+@[        if sub['topic_simple'] == 'actuator_motors']@
+				static uORB::Subscription control_mode_sub{ORB_ID(vehicle_control_mode)};
+				static uORB::Subscription offboard_mode_sub{ORB_ID(offboard_control_mode)};
+				vehicle_control_mode_s control_mode{};
+				offboard_control_mode_s offboard_mode{};
+				const hrt_abstime now = hrt_absolute_time();
+
+				if (!control_mode_sub.copy(&control_mode) || !offboard_mode_sub.copy(&offboard_mode)
+				    || !control_mode.flag_control_offboard_enabled || !control_mode.flag_armed
+				    || control_mode.flag_control_allocation_enabled || !offboard_mode.direct_actuator
+				    || now > control_mode.timestamp + 1000000 || now > offboard_mode.timestamp + 1000000) {
+					break;
+				}
+
+				for (int i = 0; i < 4; ++i) {
+					if (!PX4_ISFINITE(data.control[i]) || data.control[i] < 0.f || data.control[i] > 1.f) {
+						return;
+					}
+				}
+
+				for (int i = 4; i < actuator_motors_s::NUM_CONTROLS; ++i) {
+					data.control[i] = NAN;
+				}
+
+				data.reversible_flags = 0;
+				data.timestamp = now;
+				data.timestamp_sample = now;
+@[        end if]@
 				pubs->@(sub['topic_simple'])_pub.publish(data);
 			}
 		}
