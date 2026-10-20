@@ -1,16 +1,20 @@
-mocap_bridge:
-  host_ip: "192.168.0.6"
-  mocap_ip: "202.169.1.100"
-  type: "motionanalysis"
-  mocap_pub_name: "/opti_raw"
-  max_radius: 3.0
-  fps: 500.0
+vrpn_client:
+  server: "192.168.6.28"
+  port: 3883
+  frame_id: "Hummingbird"
+  update_freq: 1000.0
+  refresh_freq: 1.0
+  multi_sensor: false
+  use_vrpn_timestamps: false
+  sensor_data_qos: true
 
 mocap_to_px4:
-  input_topic: "/opti_raw"
+  input_topic: "/nokov_raw/Hummingbird/pose"
+  mocap_topic: "/opti_raw"
   output_topic: "/fmu/in/vehicle_visual_odometry"
-  target_body_name: "hummingbird"
-  opti_origin: [1.4, 1.4, 0.15]
+  target_body_name: "Hummingbird"
+  position_scale: 0.001
+  opti_origin: [-0.08, -0.524, 0.016] #z-up기준 HB가 있는 위치를 기입
   position_stddev: 0.02
   orientation_stddev_deg: 3.0
   quality: 100
@@ -19,5 +23,5 @@ mocap_to_px4:
 viewer:
   opti_topic: "/opti_raw"
   fmu_odom_topic: "/fmu/out/vehicle_odometry"
-  target_body_name: "hummingbird"
-  opti_origin: [1.4, 1.4, 0.15]
+  target_body_name: "Hummingbird"
+  opti_origin: [-0.08, -0.524, 0.016] #z-up기준 HB가 있는 위치를 기입
