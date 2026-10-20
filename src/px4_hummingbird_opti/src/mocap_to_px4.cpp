@@ -21,10 +21,12 @@ public:
   MocapToPx4()
   : rclcpp::Node("mocap_to_px4")
   {
-    const std::string sub_mocap_topic = this->declare_parameter<std::string>("input_topic", "/opti_raw");
+    const std::string sub_mocap_topic = this->declare_parameter<std::string>("input_topic", "/nokov_raw/Hummingbird/pose");
+    const std::string pub_mocap_topic = this->declare_parameter<std::string>("mocap_topic", "/opti_raw");
     const std::string pub_px4_topic = this->declare_parameter<std::string>("output_topic", "/fmu/in/vehicle_visual_odometry");
 
-    target_body_name_ = this->declare_parameter<std::string>("target_body_name", "hummingbird");
+    target_body_name_ = this->declare_parameter<std::string>("target_body_name", "Hummingbird");
+    position_scale_ = this->declare_parameter<double>("position_scale", 0.001);
     const std::vector<double> opti_origin = this->declare_parameter<std::vector<double>>("opti_origin", {0.0, 0.0, 0.0});
     if (opti_origin.size() == 3) { opti_origin_ = Eigen::Vector3d(opti_origin[0], opti_origin[1], opti_origin[2]); }
 
@@ -37,13 +39,16 @@ public:
     const double orientation_stddev_rad = orientation_stddev_deg * M_PI / 180.0;
     orientation_variance_ = static_cast<float>(orientation_stddev_rad * orientation_stddev_rad);
 
-    sub_mocap_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(sub_mocap_topic, rclcpp::QoS(qos_depth), std::bind(&MocapToPx4::onMocap, this, std::placeholders::_1));
+    sub_mocap_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(sub_mocap_topic, rclcpp::SensorDataQoS().keep_last(qos_depth), std::bind(&MocapToPx4::onMocap, this, std::placeholders::_1));
+    pub_mocap_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(pub_mocap_topic, rclcpp::QoS(qos_depth));
     pub_px4_ = this->create_publisher<px4_msgs::msg::VehicleOdometry>(pub_px4_topic, rclcpp::QoS(qos_depth));
 
     RCLCPP_INFO(this->get_logger(), "Subscribed: %s", sub_mocap_topic.c_str());
+    RCLCPP_INFO(this->get_logger(), "Publishing : %s", pub_mocap_topic.c_str());
     RCLCPP_INFO(this->get_logger(), "Publishing : %s", pub_px4_topic.c_str());
     RCLCPP_INFO(this->get_logger(), "Target body: %s", target_body_name_.c_str());
     RCLCPP_INFO(this->get_logger(), "OptiTrack origin offset (z-up): x=%.3f, y=%.3f, z=%.3f m", opti_origin_.x(), opti_origin_.y(), opti_origin_.z());
+    RCLCPP_INFO(this->get_logger(), "Input position scale: %.6f", position_scale_);
     RCLCPP_INFO(this->get_logger(), "Transform : pos_px4 = R_down * (opti_pos - opti_origin), R_px4 = R_down * R_opti * R_down");
   }
 
@@ -55,8 +60,15 @@ private:
     const rclcpp::Time now = this->get_clock()->now();
     const uint64_t timestamp_us = static_cast<uint64_t>(now.nanoseconds() / 1000);
 
-    const Eigen::Vector3d opti_pos(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+    const Eigen::Vector3d opti_pos = position_scale_ * Eigen::Vector3d(
+      msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
     const Eigen::Vector4d opti_att(msg->pose.orientation.w, msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z);
+
+    geometry_msgs::msg::PoseStamped opti_msg = *msg;
+    opti_msg.pose.position.x = opti_pos.x();
+    opti_msg.pose.position.y = opti_pos.y();
+    opti_msg.pose.position.z = opti_pos.z();
+    pub_mocap_->publish(opti_msg);
 
     const utils::Px4Pose pose_px4 = utils::mocapPoseToPx4(opti_pos, opti_att, opti_origin_);
 
@@ -81,12 +93,14 @@ private:
   }
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_mocap_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_mocap_;
   rclcpp::Publisher<px4_msgs::msg::VehicleOdometry>::SharedPtr pub_px4_;
 
   float position_variance_{0.0F};
   float orientation_variance_{0.0F};
   int quality_{100};
-  std::string target_body_name_{"hummingbird"};
+  double position_scale_{0.001};
+  std::string target_body_name_{"Hummingbird"};
   Eigen::Vector3d opti_origin_{0.0, 0.0, 0.0};
 };
 

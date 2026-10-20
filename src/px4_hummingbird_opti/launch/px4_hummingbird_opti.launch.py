@@ -12,19 +12,20 @@ _CONFIG_PATH = Path(get_package_share_directory("px4_hummingbird_opti")) / "conf
 def _load_config():
     with _CONFIG_PATH.open(encoding="utf-8") as config_file:
         config = yaml.safe_load(config_file)
-    return config["mocap_bridge"], config["mocap_to_px4"]
+    return config["vrpn_client"], config["mocap_to_px4"]
 
 
 def generate_launch_description():
-    mocap_params, converter_params = _load_config()
+    vrpn_params, converter_params = _load_config()
 
     return LaunchDescription([
         Node(
-            package="libmotioncapture",
-            executable="mocap_bridge.py",
-            name="mocap_bridge",
+            package="vrpn_mocap",
+            executable="client_node",
+            namespace="nokov_raw",
+            name="vrpn_client",
             output="screen",
-            parameters=[mocap_params],
+            parameters=[vrpn_params],
         ),
         Node(
             package="px4_hummingbird_opti",
