@@ -1,34 +1,26 @@
-# Orin DDS gap check
+# Orin DDS stability check
 
-Run this on Orin. It only subscribes and logs; it never publishes commands or starts the Agent. No Opti node is needed.
+Agent가 **이미 실행 중인 상태**에서 PX4 DDS 출력이 실제로 끊기는지 연속 측정한다. 이 진단은 Agent를 중단하거나 재시작하지 않고, Opti/cmd/viewer/서보 노드를 새로 실행하지 않으며, PX4에 아무 명령도 발행하지 않는다.
 
-Remove propellers and secure the airframe before any powered servo or Agent restart test. Keep the usual PX4 firmware and one Agent running:
+## Run
 
-```bash
-sudo env ROS_DOMAIN_ID=13 MicroXRCEAgent serial --dev /dev/dds -b 921600 -v 2 2>&1 | tee ~/agent_test.log
-```
-
-In another Orin terminal, run the servo node if servo behavior is being tested. Leave it in the foreground so any exit or Dynamixel error is visible:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source ~/Desktop/px4_hummingbird/install/setup.bash
-export ROS_DOMAIN_ID=13
-ros2 run px4_hummingbird_cmd px4_servo_to_dynamixel 2>&1 | tee ~/servo_test.log
-```
-
-Run the monitor in a third terminal:
+Orin의 `a603` 작업본에서 한 명령만 실행한다. 스크립트가 ROS Jazzy와 이 작업본의 `install/setup.bash`를 source하고 `ROS_DOMAIN_ID=13`을 설정한다.
 
 ```bash
 cd ~/Desktop/px4_hummingbird
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-export ROS_DOMAIN_ID=13
-python3 debug/dds_watch.py
+bash debug/run_dds_stability.sh
 ```
 
-Disarmed PX4 may not publish `actuator_servos`; `servo=0Hz` alone is not a DDS fault. When servo output is expected, add `--expect-servos`. The default gap threshold is 0.2 s, matching the servo bridge's DDS receive timeout. Stop with Ctrl-C. Each run writes `debug/logs/dds_<UTC>.jsonl`; this directory is ignored by Git.
+기본 측정 시간은 10분이다. 더 길게 보려면 `--duration 1800`, Ctrl-C까지 계속 보려면 `--duration 0`을 붙인다. 기본 공백 기준은 서보 노드의 DDS 수신 타임아웃과 같은 0.2초이며 `--gap 0.1`처럼 조정할 수 있다.
 
-The JSONL contains every received sample, receipt time, PX4 timestamp, servo control values, detected gaps/silences, publisher counts, and Agent/servo process PID changes. `agent=[]` or `servo=[]` means the corresponding executable was not found on the same Orin. The monitor observes ROS topics locally: seeing an `/fmu/in/...` sample does **not** prove PX4 accepted it. Compare with `uxrce_dds_client status` on PX4 for `connected` and TX/RX payload rates. Rates in the terminal are 1-second windows; the JSONL gap events are more useful for intermittent stalls. A topic may appear in the ROS graph without delivering samples.
+무장 해제 상태에서는 `/fmu/out/vehicle_attitude`만으로 DDS 연속성을 확인할 수 있다. `/fmu/out/actuator_servos`와 `/fmu/out/actuator_motors`는 PX4가 실제로 발행할 때 함께 측정된다. 무장 해제 중 서보 0 Hz는 고장이 아니다. 서보 명령이 반드시 나와야 하는 별도 지상 시험에서만 `--expect-servos`를 사용한다. 모터·서보를 동작시키는 시험은 프로펠러를 제거하고 기체를 고정한 상태에서 한다.
 
-To test reconnection without Opti, keep PX4 disarmed, stop only the Agent for a few seconds, restart it, and check that `/fmu/out/vehicle_attitude` resumes. A later servo test requires actual PX4 servo output with propellers removed. If the Agent returns but the servo executable has exited, inspect `~/servo_test.log` for `Dynamixel output failed` or `Dynamixel output timeout`. Do not infer a servo failure from silence while disarmed.
+## Read Results
+
+- 5초마다 출력되는 `att`, `servo`의 Hz, 마지막 메시지 나이(`age`), 최근 2000개 간격의 `p99`, 누적 공백 수(`gaps`), 최대 공백(`max`)을 본다.
+- `SILENCE`는 마지막 수신 후 0.2초 이상 새 메시지가 없다는 뜻이다. 다시 메시지가 오면 전체 중단 길이를 `GAP`으로 기록한다.
+- `NO DATA /fmu/out/vehicle_attitude`는 시작 후 3초 동안 기준 출력조차 들어오지 않았다는 뜻이다.
+- `agent=DOWN`은 Orin에서 Agent 실행 파일을 찾지 못한 상태다. `servo_node=off`는 서보 실행 파일이 없는 상태이며, 서보 토픽의 수신 자체와는 별개의 정보다.
+- 종료 시 토픽별 전체 샘플 수, 공백 횟수, 최대 공백, p99를 출력한다. 모든 메시지의 수신 시각, PX4 timestamp, 서보 control, 상태와 공백 이벤트는 `debug/logs/dds_<UTC>.jsonl`에 저장된다. 이 로그 폴더는 Git에서 제외한다.
+
+이 측정은 **Orin의 ROS 구독자가 받은 시각**을 기준으로 한다. 공백만으로 PX4 내부 발행 중단과 Agent/serial 손실을 단정할 수 없다. 공백이 발생하면 PX4 콘솔의 `listener vehicle_attitude`, `listener actuator_servos`, `uxrce_dds_client status`와 비교한다. PX4 listener는 계속 갱신되는데 Orin만 공백이라면 DDS/Agent/serial/Orin 구독 경로를 우선 조사한다. Agent의 `Payload rx: 0 B/s`는 Opti와 cmd 입력이 없다면 정상이다.
