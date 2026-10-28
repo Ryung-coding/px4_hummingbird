@@ -789,9 +789,10 @@ ControlAllocator::publish_hummingbird_actuator_controls()
 		actuator_motors.control[i] = NAN;
 	}
 
+	// Use the same normalized motor command scale as the conventional allocator at a mode switch.
 	for (int i = 0; i < 4; ++i) {
 		if (PX4_ISFINITE(_hummingbird_motor_sp(i))) {
-			actuator_motors.control[i] = sqrtf(math::constrain(_hummingbird_motor_sp(i) / kHummingBirdMaxRotorThrust, 0.0f, 1.0f));
+			actuator_motors.control[i] = math::constrain(_hummingbird_motor_sp(i) / kHummingBirdMaxRotorThrust, 0.0f, 1.0f);
 
 		} else {
 			actuator_motors.control[i] = NAN;
