@@ -2,6 +2,7 @@
 import json
 import math
 import queue
+import signal
 import sys
 import threading
 import time
@@ -49,6 +50,9 @@ REAL_3D_Z_MAX_M = 3.0
 LOGGER_BATCH_RECORDS = 256
 LOGGER_FLUSH_SEC = 0.5
 LOGGER_QUEUE_RECORDS = 50000
+TIMELINE_BAND_FRACTION = 0.14
+TIMELINE_OPEN_SEGMENT_SEC = 86400.0
+OPTI_HEALTH_UPDATE_SEC = 0.05
 
 C_R = "#e6194b"
 C_G = "#3cb44b"
@@ -497,6 +501,9 @@ class Px4ViewerNode(Node):
         self.opti_topic = str(self.declare_parameter("opti_topic", "/opti_raw").value)
         self.fmu_odom_topic = str(self.declare_parameter("fmu_odom_topic", "/fmu/out/vehicle_odometry").value)
         self.target_body_name = str(self.declare_parameter("target_body_name", "Hummingbird").value)
+        self.opti_delay_avg_sec = max(0.05, float(self.declare_parameter("opti_delay_avg_sec", 1.0).value))
+        self.opti_rate_window_sec = max(0.1, float(self.declare_parameter("opti_rate_window_sec", 1.0).value))
+        self.opti_lost_hz_threshold = max(0.0, float(self.declare_parameter("opti_lost_hz_threshold", 50.0).value))
         self.replay_log_path = str(self.declare_parameter("replay_log_path", "").value).strip()
         self.replay_enabled = bool(self.replay_log_path)
         self.replay_records = []
@@ -522,6 +529,9 @@ class Px4ViewerNode(Node):
             "opti_topic": self.opti_topic,
             "fmu_odom_topic": self.fmu_odom_topic,
             "target_body_name": self.target_body_name,
+            "opti_delay_avg_sec": self.opti_delay_avg_sec,
+            "opti_rate_window_sec": self.opti_rate_window_sec,
+            "opti_lost_hz_threshold": self.opti_lost_hz_threshold,
             "opti_origin_z_up_m": json_list(self.opti_origin),
             "real_mode_extra_topics": self.real_mode,
             "replay_log_path": self.replay_log_path,
@@ -535,7 +545,6 @@ class Px4ViewerNode(Node):
         self.last_motor_controls = np.zeros(4, dtype=np.float64)
         self.last_motor_forces = np.zeros(4, dtype=np.float64)
         self.last_servo_controls = np.zeros(6, dtype=np.float64)
-        self.last_dynamixel_controls = np.full(6, np.nan, dtype=np.float64)
         self.last_manual = np.zeros(4, dtype=np.float64)
         self.last_manual_valid = False
         self.last_manual_source = 0
@@ -553,7 +562,6 @@ class Px4ViewerNode(Node):
         self.last_failsafe = False
 
         self.last_topic_rx = {}
-        self.last_opti_rx = None
         self.last_opti_pos = None
         self.last_opti_att = None
         self.last_fmu_pose_rx = None
@@ -561,11 +569,9 @@ class Px4ViewerNode(Node):
         self.last_fmu_pose_pos = None
         self.last_fmu_pose_att = None
         self.last_fmu_pose_source = "none"
-        self.last_arrival_delay_ms = math.nan
-        self.last_value_delay_ms = math.nan
-        self.last_match_error_m = math.nan
-        self.last_live_error_m = math.nan
-        self.recent_opti = deque(maxlen=MAX_SAMPLES)
+        self.opti_delay_window = deque()
+        self.opti_arrival_times = deque()
+        self.last_opti_health_sample_t = -math.inf
 
         self.buf_pos = Ring(MAX_SAMPLES, 4)
         self.buf_pos_sp = Ring(MAX_SAMPLES, 4)
@@ -576,15 +582,17 @@ class Px4ViewerNode(Node):
         self.buf_motor = Ring(MAX_SAMPLES, 5)
         self.buf_beta = Ring(MAX_SAMPLES, 3)
         self.buf_alpha = Ring(MAX_SAMPLES, 5)
-        self.buf_dynamixel_beta = Ring(MAX_SAMPLES, 3)
-        self.buf_dynamixel_alpha = Ring(MAX_SAMPLES, 5)
+        self.buf_cmd_state = Ring(MAX_SAMPLES, 2)
+        self.buf_flight_state = Ring(MAX_SAMPLES, 2)
 
         self.buf_opti_pos = Ring(MAX_SAMPLES, 4)
         self.buf_fmu_pose_pos = Ring(MAX_SAMPLES, 4)
         self.buf_opti_rpy = Ring(MAX_SAMPLES, 4)
         self.buf_fmu_pose_rpy = Ring(MAX_SAMPLES, 4)
-        self.buf_delay = Ring(MAX_SAMPLES, 4)
         self.buf_pos_error = Ring(MAX_SAMPLES, 5)
+        self.buf_opti_transport_delay = Ring(MAX_SAMPLES, 3)
+        self.buf_opti_hz = Ring(MAX_SAMPLES, 2)
+        self.buf_opti_lost = Ring(MAX_SAMPLES, 2)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -605,7 +613,6 @@ class Px4ViewerNode(Node):
             self._subscribe(ManualControlSetpoint, "/fmu/out/manual_control_setpoint", self._cb_manual, qos)
             self._subscribe(ActuatorMotors, "/fmu/out/actuator_motors", self._cb_motors, qos)
             self._subscribe(ActuatorServos, "/fmu/out/actuator_servos", self._cb_servos, qos)
-            self._subscribe(ActuatorServos, "/dynamixel_tilt_mea", self._cb_dynamixel_servos, qos)
             self._subscribe(HummingbirdStatus, "/fmu/out/hummingbird_status", self._cb_status, qos)
             self._subscribe(VehicleStatus, "/fmu/out/vehicle_status", self._cb_vehicle_status, qos)
 
@@ -616,6 +623,10 @@ class Px4ViewerNode(Node):
                 else:
                     self.get_logger().warning("px4_msgs/msg/VehicleOdometry is not available. Real tab will use vehicle_local_position fallback only.")
                     self.logger.write("viewer_warning", {"message": "VehicleOdometry import failed"})
+
+        self.opti_health_timer = None
+        if self.real_mode and not self.replay_enabled:
+            self.opti_health_timer = self.create_timer(OPTI_HEALTH_UPDATE_SEC, self._opti_health_tick)
 
         self.get_logger().info(f"Viewer mode: {self.viewer_mode}")
         if self.replay_enabled:
@@ -779,25 +790,8 @@ class Px4ViewerNode(Node):
             self.buf_beta.push([t, beta[0], beta[1]])
             self.buf_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
 
-    def _cb_dynamixel_servos(self, msg):
-        t = self._t()
-        controls = finite_n(msg.control, 6)
-        beta = finite_n(msg.control[0:2], 2) * self.beta_limit_rad * RAD2DEG
-        alpha = finite_n(msg.control[2:6], 4) * self.alpha_limit_rad * RAD2DEG
-        self.logger.write("/dynamixel_tilt_mea", {
-            "timestamp": int(msg.timestamp),
-            "timestamp_sample": int(msg.timestamp_sample),
-            "control": json_list(msg.control),
-            "beta_deg": json_list(beta, 2),
-            "alpha_deg": json_list(alpha, 4),
-        })
-        with self.lock:
-            self._mark_rx_unlocked("dynamixel_tilt_mea", t)
-            self.last_dynamixel_controls = controls
-            self.buf_dynamixel_beta.push([t, beta[0], beta[1]])
-            self.buf_dynamixel_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
-
     def _cb_status(self, msg):
+        t = self._t()
         hb_enabled = getattr(
             msg,
             "hummingbird_control_enabled",
@@ -813,8 +807,9 @@ class Px4ViewerNode(Node):
             "hummingbird_control_enabled": bool(hb_enabled),
         })
         with self.lock:
-            self._mark_rx_unlocked("hummingbird_status", self._t())
+            self._mark_rx_unlocked("hummingbird_status", t)
             self.last_hb_cmd_source = int(msg.hb_cmd_source)
+            self.buf_cmd_state.push([t, self.last_hb_cmd_source])
             self.last_hb_ctrl_mode = int(msg.hb_ctrl_mode)
             self.last_dds_enabled = bool(msg.dds_command_enabled)
             self.last_hummingbird_airframe = bool(airframe)
@@ -833,22 +828,57 @@ class Px4ViewerNode(Node):
         with self.lock:
             self._mark_rx_unlocked("vehicle_status", t)
             self.last_nav_state = int(msg.nav_state)
+            self.buf_flight_state.push([t, self.last_nav_state])
             self.last_arming_state = int(msg.arming_state)
             self.last_disarming_reason = int(msg.latest_disarming_reason)
             self.last_failsafe = bool(msg.failsafe)
+
+    def _record_opti_health_unlocked(self, t, force=False):
+        cutoff = t - self.opti_rate_window_sec
+        while self.opti_arrival_times and self.opti_arrival_times[0] < cutoff:
+            self.opti_arrival_times.popleft()
+
+        if not force and t - self.last_opti_health_sample_t < OPTI_HEALTH_UPDATE_SEC * 0.8:
+            return
+
+        rate_hz = len(self.opti_arrival_times) / self.opti_rate_window_sec
+        lost = 1.0 if rate_hz < self.opti_lost_hz_threshold else 0.0
+        self.buf_opti_hz.push([t, rate_hz])
+        self.buf_opti_lost.push([t, lost])
+        self.last_opti_health_sample_t = t
+
+    def _record_opti_timing_unlocked(self, t, raw_delay_ms):
+        self.opti_arrival_times.append(t)
+        if math.isfinite(raw_delay_ms):
+            self.opti_delay_window.append((t, raw_delay_ms))
+            cutoff = t - self.opti_delay_avg_sec
+            while self.opti_delay_window and self.opti_delay_window[0][0] < cutoff:
+                self.opti_delay_window.popleft()
+            mean_delay_ms = sum(value for _, value in self.opti_delay_window) / len(self.opti_delay_window)
+            self.buf_opti_transport_delay.push([t, raw_delay_ms, mean_delay_ms])
+        self._record_opti_health_unlocked(t)
+
+    def _opti_health_tick(self):
+        t = self._t()
+        with self.lock:
+            self._record_opti_health_unlocked(t)
 
     def _cb_opti(self, msg):
         if self.target_body_name and msg.header.frame_id != self.target_body_name:
             return
 
-        t = self._t()
+        receive_stamp = self.get_clock().now().nanoseconds * 1e-9
+        t = receive_stamp - self.t0
+        header_stamp = stamp_to_sec(msg.header.stamp)
+        raw_delay_ms = (receive_stamp - header_stamp) * 1000.0 if header_stamp > 0.0 else math.nan
         opti_pos = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z], dtype=np.float64)
         opti_att = np.array([msg.pose.orientation.w, msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z], dtype=np.float64)
         pos_px4, att_px4 = mocap_pose_to_px4(opti_pos, opti_att, self.opti_origin)
         rpy_px4 = quat_to_rpy_deg(att_px4)
 
         self.logger.write(self.opti_topic, {
-            "header_stamp": stamp_to_sec(msg.header.stamp),
+            "header_stamp": header_stamp,
+            "transport_delay_ms": json_float(raw_delay_ms),
             "frame_id": msg.header.frame_id,
             "opti_position_z_up": json_list(opti_pos),
             "opti_q_wxyz": json_list(opti_att, 4),
@@ -859,12 +889,11 @@ class Px4ViewerNode(Node):
 
         with self.lock:
             self._mark_rx_unlocked("opti_raw", t)
-            self.last_opti_rx = t
             self.last_opti_pos = pos_px4.copy()
             self.last_opti_att = att_px4.copy()
-            self.recent_opti.append((t, pos_px4.copy(), att_px4.copy()))
             self.buf_opti_pos.push([t, pos_px4[0], pos_px4[1], pos_px4[2]])
             self.buf_opti_rpy.push([t, rpy_px4[0], rpy_px4[1], rpy_px4[2]])
+            self._record_opti_timing_unlocked(t, raw_delay_ms)
 
     def _cb_fmu_odom(self, msg):
         t = self._t()
@@ -904,19 +933,8 @@ class Px4ViewerNode(Node):
             if self.last_opti_pos is not None:
                 err = pos - self.last_opti_pos
                 err_norm = float(np.linalg.norm(err))
-                self.last_live_error_m = err_norm
                 self.buf_pos_error.push([t, err[0], err[1], err[2], err_norm])
 
-            if self.last_opti_rx is not None:
-                self.last_arrival_delay_ms = (t - self.last_opti_rx) * 1000.0
-
-            candidates = [sample for sample in self.recent_opti if 0.0 <= (t - sample[0]) <= 2.0]
-            if candidates:
-                best_t, best_pos, _ = min(candidates, key=lambda sample: np.linalg.norm(pos - sample[1]))
-                match_error = float(np.linalg.norm(pos - best_pos))
-                self.last_value_delay_ms = (t - best_t) * 1000.0
-                self.last_match_error_m = match_error
-                self.buf_delay.push([t, self.last_arrival_delay_ms, self.last_value_delay_ms, match_error])
 
     def _load_replay_records(self):
         path = Path(self.replay_log_path).expanduser()
@@ -964,17 +982,21 @@ class Px4ViewerNode(Node):
         start_time, end_time = sorted((float(start_time), float(end_time)))
         start_time = max(0.0, min(start_time, self.replay_duration))
         end_time = max(start_time, min(end_time, self.replay_duration))
-        lo = int(np.searchsorted(self.replay_times, start_time, side="left"))
+        warmup_sec = max(self.opti_delay_avg_sec, self.opti_rate_window_sec)
+        warmup_start = max(0.0, start_time - warmup_sec)
+        warmup_lo = int(np.searchsorted(self.replay_times, warmup_start, side="left"))
         hi = int(np.searchsorted(self.replay_times, end_time, side="right"))
 
         with self.lock:
             self._reset_replay_view_state_unlocked()
             self.current_replay_time = end_time
 
-        for record in self.replay_records[lo:hi]:
+        for record in self.replay_records[warmup_lo:hi]:
             self._ingest_replay_record(record)
 
         with self.lock:
+            if self.real_mode:
+                self._record_opti_health_unlocked(end_time, force=True)
             self.current_replay_time = end_time
 
     def _reset_replay_view_state_unlocked(self):
@@ -985,7 +1007,6 @@ class Px4ViewerNode(Node):
         self.last_motor_controls = np.zeros(4, dtype=np.float64)
         self.last_motor_forces = np.zeros(4, dtype=np.float64)
         self.last_servo_controls = np.zeros(6, dtype=np.float64)
-        self.last_dynamixel_controls = np.full(6, np.nan, dtype=np.float64)
         self.last_manual = np.zeros(4, dtype=np.float64)
         self.last_manual_valid = False
         self.last_manual_source = 0
@@ -1000,7 +1021,6 @@ class Px4ViewerNode(Node):
         self.last_disarming_reason = -1
         self.last_failsafe = False
         self.last_topic_rx = {}
-        self.last_opti_rx = None
         self.last_opti_pos = None
         self.last_opti_att = None
         self.last_fmu_pose_rx = None
@@ -1008,11 +1028,9 @@ class Px4ViewerNode(Node):
         self.last_fmu_pose_pos = None
         self.last_fmu_pose_att = None
         self.last_fmu_pose_source = "none"
-        self.last_arrival_delay_ms = math.nan
-        self.last_value_delay_ms = math.nan
-        self.last_match_error_m = math.nan
-        self.last_live_error_m = math.nan
-        self.recent_opti = deque(maxlen=MAX_SAMPLES)
+        self.opti_delay_window = deque()
+        self.opti_arrival_times = deque()
+        self.last_opti_health_sample_t = -math.inf
         self.buf_pos = Ring(MAX_SAMPLES, 4)
         self.buf_pos_sp = Ring(MAX_SAMPLES, 4)
         self.buf_rpy = Ring(MAX_SAMPLES, 4)
@@ -1022,19 +1040,25 @@ class Px4ViewerNode(Node):
         self.buf_motor = Ring(MAX_SAMPLES, 5)
         self.buf_beta = Ring(MAX_SAMPLES, 3)
         self.buf_alpha = Ring(MAX_SAMPLES, 5)
-        self.buf_dynamixel_beta = Ring(MAX_SAMPLES, 3)
-        self.buf_dynamixel_alpha = Ring(MAX_SAMPLES, 5)
+        self.buf_cmd_state = Ring(MAX_SAMPLES, 2)
+        self.buf_flight_state = Ring(MAX_SAMPLES, 2)
         self.buf_opti_pos = Ring(MAX_SAMPLES, 4)
         self.buf_fmu_pose_pos = Ring(MAX_SAMPLES, 4)
         self.buf_opti_rpy = Ring(MAX_SAMPLES, 4)
         self.buf_fmu_pose_rpy = Ring(MAX_SAMPLES, 4)
-        self.buf_delay = Ring(MAX_SAMPLES, 4)
         self.buf_pos_error = Ring(MAX_SAMPLES, 5)
+        self.buf_opti_transport_delay = Ring(MAX_SAMPLES, 3)
+        self.buf_opti_hz = Ring(MAX_SAMPLES, 2)
+        self.buf_opti_lost = Ring(MAX_SAMPLES, 2)
 
     def _ingest_replay_record(self, record):
         topic = str(record.get("topic", ""))
         data = record.get("data", {})
         t = float(record.get("_replay_t", 0.0))
+
+        if self.real_mode:
+            with self.lock:
+                self._record_opti_health_unlocked(t)
 
         if topic == "/fmu/out/vehicle_local_position":
             pos = vec_from_log(data, "position", 3)
@@ -1108,27 +1132,22 @@ class Px4ViewerNode(Node):
                 self.last_sticks_moving = bool(data.get("sticks_moving", False))
             return
 
-        if topic in ("/fmu/out/actuator_servos", "/dynamixel_tilt_mea"):
+        if topic == "/fmu/out/actuator_servos":
             controls = vec_from_log(data, "control", 6)
             beta = vec_from_log(data, "beta_deg", 2) if "beta_deg" in data else controls[0:2] * self.beta_limit_rad * RAD2DEG
             alpha = vec_from_log(data, "alpha_deg", 4) if "alpha_deg" in data else controls[2:6] * self.alpha_limit_rad * RAD2DEG
             with self.lock:
-                key = "actuator_servos" if topic == "/fmu/out/actuator_servos" else "dynamixel_tilt_mea"
-                self._mark_rx_unlocked(key, t)
-                if topic == "/fmu/out/actuator_servos":
-                    self.last_servo_controls = controls
-                    self.buf_beta.push([t, beta[0], beta[1]])
-                    self.buf_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
-                else:
-                    self.last_dynamixel_controls = controls
-                    self.buf_dynamixel_beta.push([t, beta[0], beta[1]])
-                    self.buf_dynamixel_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
+                self._mark_rx_unlocked("actuator_servos", t)
+                self.last_servo_controls = controls
+                self.buf_beta.push([t, beta[0], beta[1]])
+                self.buf_alpha.push([t, alpha[0], alpha[1], alpha[2], alpha[3]])
             return
 
         if topic == "/fmu/out/hummingbird_status":
             with self.lock:
                 self._mark_rx_unlocked("hummingbird_status", t)
                 self.last_hb_cmd_source = int(data.get("hb_cmd_source", -1))
+                self.buf_cmd_state.push([t, self.last_hb_cmd_source])
                 self.last_hb_ctrl_mode = int(data.get("hb_ctrl_mode", -1))
                 self.last_dds_enabled = bool(data.get("dds_command_enabled", False))
                 self.last_hummingbird_airframe = bool(data.get("hummingbird_airframe", data.get("hummingbird_control_enabled", False)))
@@ -1139,6 +1158,7 @@ class Px4ViewerNode(Node):
             with self.lock:
                 self._mark_rx_unlocked("vehicle_status", t)
                 self.last_nav_state = int(data.get("nav_state", -1))
+                self.buf_flight_state.push([t, self.last_nav_state])
                 self.last_arming_state = int(data.get("arming_state", -1))
                 self.last_disarming_reason = int(data.get("latest_disarming_reason", -1))
                 self.last_failsafe = bool(data.get("failsafe", False))
@@ -1148,14 +1168,18 @@ class Px4ViewerNode(Node):
             pos = vec_from_log(data, "px4_position_ned", 3)
             q = vec_from_log(data, "px4_q_wxyz", 4)
             rpy = vec_from_log(data, "px4_rpy_deg", 3) if "px4_rpy_deg" in data else quat_to_rpy_deg(q)
+            raw_delay_ms = json_float(data.get("transport_delay_ms"))
+            if raw_delay_ms is None:
+                wall_time = json_float(record.get("wall_time"))
+                header_stamp = json_float(data.get("header_stamp"))
+                raw_delay_ms = (wall_time - header_stamp) * 1000.0 if wall_time is not None and header_stamp is not None and header_stamp > 0.0 else math.nan
             with self.lock:
                 self._mark_rx_unlocked("opti_raw", t)
-                self.last_opti_rx = t
                 self.last_opti_pos = pos.copy()
                 self.last_opti_att = normalize_quat(q).copy()
-                self.recent_opti.append((t, pos.copy(), q.copy()))
                 self.buf_opti_pos.push([t, pos[0], pos[1], pos[2]])
                 self.buf_opti_rpy.push([t, rpy[0], rpy[1], rpy[2]])
+                self._record_opti_timing_unlocked(t, raw_delay_ms)
             return
 
         if topic == self.fmu_odom_topic or topic == "/fmu/out/vehicle_odometry":
@@ -1176,10 +1200,6 @@ def _pen(color, width=3):
 
 def _cmd_pen(width=3):
     return pg.mkPen(color="k", width=width, style=QtCore.Qt.DashLine)
-
-
-def _mea_pen(color, width=3):
-    return pg.mkPen(color=color, width=width, style=QtCore.Qt.DashLine)
 
 
 def _style_plot(plot, ylabel, xlabel=None):
@@ -1235,30 +1255,24 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.badge_mode = QtWidgets.QLabel()
         self.badge_log = QtWidgets.QLabel()
         self.badge_flight = QtWidgets.QLabel()
-        self.badge_arm = QtWidgets.QLabel()
-        self.badge_hb = QtWidgets.QLabel()
         self.badge_dds = QtWidgets.QLabel()
         self.badge_manual = QtWidgets.QLabel()
         self.badge_cmd = QtWidgets.QLabel()
         self.badge_ctrl = QtWidgets.QLabel()
         self.badge_opti = QtWidgets.QLabel()
         self.badge_fmu = QtWidgets.QLabel()
-        self.badge_delay = QtWidgets.QLabel()
-        self.badge_error = QtWidgets.QLabel()
 
         badges = [
             self.badge_mode,
             self.badge_log,
             self.badge_flight,
-            self.badge_arm,
-            self.badge_hb,
             self.badge_dds,
             self.badge_manual,
             self.badge_cmd,
             self.badge_ctrl,
         ]
         if node.real_mode:
-            badges.extend([self.badge_opti, self.badge_fmu, self.badge_delay, self.badge_error])
+            badges.extend([self.badge_opti, self.badge_fmu])
 
         for badge in badges:
             badge.setAlignment(QtCore.Qt.AlignCenter)
@@ -1268,6 +1282,14 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         status_layout.addStretch(1)
         root.addWidget(self.status_widget)
+        self.timeline_legend = QtWidgets.QLabel(
+            "Timeline background: "
+            "<span style='background:#90caf9; padding:2px 7px;'>top · CMD DDS</span> "
+            "<span style='background:#a5d6a7; padding:2px 7px;'>bottom · OFFBOARD</span>"
+        )
+        self.timeline_legend.setTextFormat(QtCore.Qt.RichText)
+        self.timeline_legend.setStyleSheet("padding:2px 8px; color:#333333; font-size:10pt;")
+        root.addWidget(self.timeline_legend)
 
         tabs = QtWidgets.QTabWidget()
         root.addWidget(tabs, 1)
@@ -1278,6 +1300,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.real_plots = []
         self.real_time_plots = []
         self.real_bottom_time_plots = []
+        self._state_background_items = []
+        self._state_background_signature = None
         self.window_sec = WINDOW_SEC
         self.replay_range_slider = None
         self.replay_range_label = None
@@ -1310,7 +1334,7 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self.real_layout.setSpacing(6)
             for col in range(4):
                 self.real_layout.setColumnStretch(col, 1)
-            for row in range(3):
+            for row in range(4):
                 self.real_layout.setRowStretch(row, 1)
             tabs.addTab(self.real_tab, "Real Opti")
             self._build_real_tab()
@@ -1403,19 +1427,13 @@ class ViewerWindow(QtWidgets.QMainWindow):
     def _update_status_bar(self):
         nd = self.node
         with nd.lock:
-            hb_airframe = nd.last_hummingbird_airframe
             dds = nd.last_dds_enabled
             manual = nd.last_manual_valid
             cmd = nd.last_hb_cmd_source
             ctrl = nd.last_hb_ctrl_mode
             nav_state = nd.last_nav_state
-            arming_state = nd.last_arming_state
-            disarming_reason = nd.last_disarming_reason
             failsafe = nd.last_failsafe
             source = nd.last_fmu_pose_source
-            value_delay_ms = nd.last_value_delay_ms
-            match_error_m = nd.last_match_error_m
-            live_error_m = nd.last_live_error_m
 
         view_value = "REPLAY" if nd.replay_enabled else nd.viewer_mode.upper()
         self._set_value_badge(self.badge_mode, "VIEW", view_value, "#6a1b9a" if nd.replay_enabled else "#1565c0" if nd.real_mode else "#455a64")
@@ -1431,18 +1449,6 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self._set_value_badge(self.badge_flight, "FLIGHT", flight_label, flight_bg)
         self.badge_flight.setToolTip("vehicle_status.nav_state (active PX4 flight mode)")
 
-        arm_label = arm_state_label(arming_state, disarming_reason, nav_state)
-        arm_bg = {
-            "ARMED": "#2e7d32",
-            "DISARMED": "#455a64",
-            "KILL": "#c62828",
-            "TERMINATE": "#c62828",
-        }.get(arm_label, "#757575")
-        self._set_value_badge(self.badge_arm, "ARM", arm_label, arm_bg)
-        self.badge_arm.setToolTip("vehicle_status: arming_state / latest_disarming_reason / termination")
-
-        self._set_bool_badge(self.badge_hb, "HB AIR", hb_airframe)
-        self.badge_hb.setToolTip("hummingbird_status.hummingbird_airframe")
         self._set_bool_badge(self.badge_dds, "DDS IN", dds)
         self.badge_dds.setToolTip("hummingbird_status.dds_command_enabled")
         self._set_bool_badge(self.badge_manual, "RC IN", manual)
@@ -1466,21 +1472,6 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self.badge_opti.setToolTip(f"raw mocap topic: {nd.opti_topic}, frame_id={nd.target_body_name}")
             self._set_age_badge(self.badge_fmu, "FMU", fmu_age)
             self.badge_fmu.setToolTip(f"preferred={nd.fmu_odom_topic}, fallback=/fmu/out/vehicle_local_position, current={source}")
-            if math.isfinite(value_delay_ms):
-                bg = "#2e7d32" if value_delay_ms < 50.0 else "#ef6c00" if value_delay_ms < 150.0 else "#c62828"
-                self._set_value_badge(self.badge_delay, "DLY", f"{value_delay_ms:.0f}ms", bg)
-                self.badge_delay.setToolTip(f"value-match delay, source={source}, match_error={match_error_m:.4f}m")
-            else:
-                self._set_value_badge(self.badge_delay, "DLY", "WAIT", "#757575")
-                self.badge_delay.setToolTip("waiting for comparable Opti/FMU position samples")
-
-            if math.isfinite(live_error_m):
-                bg = "#2e7d32" if live_error_m < 0.05 else "#ef6c00" if live_error_m < 0.15 else "#c62828"
-                self._set_value_badge(self.badge_error, "ERR", f"{live_error_m:.3f}m", bg)
-                self.badge_error.setToolTip(f"live FMU-Opti position error, match_error={match_error_m:.4f}m")
-            else:
-                self._set_value_badge(self.badge_error, "ERR", "WAIT", "#757575")
-                self.badge_error.setToolTip("waiting for Opti/FMU position samples")
 
     def _build_state_tab(self):
         pos_lbl = ["x", "y", "z"]
@@ -1514,23 +1505,19 @@ class ViewerWindow(QtWidgets.QMainWindow):
             p.setXLink(self.state_plots[0])
 
         for p in self.state_plots:
-            p.hideAxis("bottom")
-
-        for p in self.state_plots[-3:]:
             p.showAxis("bottom")
             p.setLabel("bottom", "time [s]")
 
-    def _add_angle_plot(self, row, col, title, cmd_key, mea_key, color, y_min, y_max):
+    def _add_angle_plot(self, row, col, title, cmd_key, color, y_min, y_max):
         p = _mkplot(self.act_glw, row, col, title, "angle [deg]")
         self.cv[cmd_key] = p.plot(pen=_pen(color), name="cmd")
-        self.cv[mea_key] = _front(p.plot(pen=_mea_pen(color), name="mea"))
         p.setYRange(y_min, y_max, padding=0.03)
         self.act_plots.append(p)
         return p
 
     def _build_act_tab(self):
-        self._add_angle_plot(0, 0, "beta1: cmd / mea", "beta0", "dxl_beta0", C_R, -190.0, 190.0)
-        self._add_angle_plot(0, 1, "beta2: cmd / mea", "beta1", "dxl_beta1", C_G, -190.0, 190.0)
+        self._add_angle_plot(0, 0, "beta1 cmd", "beta0", C_R, -190.0, 190.0)
+        self._add_angle_plot(0, 1, "beta2 cmd", "beta1", C_G, -190.0, 190.0)
 
         p_force = _mkplot(self.act_glw, 0, 2, "Rotor thrust f1-f4", "force [N]", colspan=2)
         for i, color in enumerate(C4):
@@ -1540,9 +1527,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
         for i, color in enumerate(C4):
             self._add_angle_plot(
                 1, i,
-                f"alpha{i + 1}: cmd / mea",
+                f"alpha{i + 1} cmd",
                 f"alpha{i}",
-                f"dxl_alpha{i}",
                 color,
                 -35.0,
                 35.0,
@@ -1552,9 +1538,6 @@ class ViewerWindow(QtWidgets.QMainWindow):
             p.setXLink(self.act_plots[0])
 
         for p in self.act_plots:
-            p.hideAxis("bottom")
-
-        for p in self.act_plots[-4:]:
             p.showAxis("bottom")
             p.setLabel("bottom", "time [s]")
 
@@ -1575,38 +1558,49 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self.real_plots.append(p)
             self.real_time_plots.append(p)
 
-        p_delay = _mk_plot_widget("Opti to FMU delay", "delay [ms]")
-        self.cv["delay_arrival"] = p_delay.plot(pen=_pen(C_O), name="arrival")
-        self.cv["delay_value"] = p_delay.plot(pen=_pen(C_P), name="value-match")
+        p_delay = _mk_plot_widget("Opti transport delay", "delay [ms]")
+        self.cv["opti_delay_raw"] = p_delay.plot(pen=_pen(C_O), name="raw")
+        self.cv["opti_delay_avg"] = p_delay.plot(
+            pen=_pen(C_P), name=f"{self.node.opti_delay_avg_sec:g}s avg")
         self.real_layout.addWidget(p_delay, 1, 3)
         self.real_plots.append(p_delay)
         self.real_time_plots.append(p_delay)
 
         rpy_lbl = ["roll", "pitch", "yaw"]
         for i, label in enumerate(rpy_lbl):
-            p = _mk_plot_widget(f"{label}: opti / fmu", f"{label} [deg]", "time [s]")
+            p = _mk_plot_widget(f"{label}: opti / fmu", f"{label} [deg]")
             self.cv[f"opti_rpy{i}"] = p.plot(pen=_pen(C_G), name="opti")
             self.cv[f"fmu_rpy{i}"] = p.plot(pen=_pen(C_B), name="fmu")
             self.real_layout.addWidget(p, 2, i)
             self.real_plots.append(p)
             self.real_time_plots.append(p)
-            self.real_bottom_time_plots.append(p)
 
-        p_error = _mk_plot_widget("Position error", "error [m]", "time [s]")
+        p_error = _mk_plot_widget("Position error", "error [m]")
         self.cv["err_norm"] = p_error.plot(pen=_pen(C_R), name="live norm")
-        self.cv["match_error"] = p_error.plot(pen=_pen(C_C), name="match norm")
         self.real_layout.addWidget(p_error, 2, 3)
         self.real_plots.append(p_error)
         self.real_time_plots.append(p_error)
-        self.real_bottom_time_plots.append(p_error)
+
+        threshold = self.node.opti_lost_hz_threshold
+        p_hz = _mk_plot_widget(f"Opti receive rate (LOST < {threshold:g} Hz)", "rate [Hz]")
+        self.cv["opti_hz"] = p_hz.plot(pen=_pen(C_C), name="Opti Hz")
+        p_hz.addLine(y=threshold, pen=pg.mkPen(C_R, width=2, style=QtCore.Qt.DashLine))
+        self.real_layout.addWidget(p_hz, 3, 0, 1, 2)
+        self.real_plots.append(p_hz)
+        self.real_time_plots.append(p_hz)
+
+        p_lost = _mk_plot_widget("Opti rigid-body lost", "lost [0/1]")
+        self.cv["opti_lost"] = p_lost.plot(pen=_pen(C_R), name="0=OK, 1=LOST")
+        p_lost.setYRange(-0.05, 1.05, padding=0)
+        p_lost.getAxis("left").setTicks([[(0.0, "0"), (1.0, "1")]])
+        self.real_layout.addWidget(p_lost, 3, 2, 1, 2)
+        self.real_plots.append(p_lost)
+        self.real_time_plots.append(p_lost)
 
         for p in self.real_time_plots[1:]:
             p.setXLink(self.real_time_plots[0])
 
         for p in self.real_time_plots:
-            p.hideAxis("bottom")
-
-        for p in self.real_bottom_time_plots:
             p.showAxis("bottom")
             p.setLabel("bottom", "time [s]")
 
@@ -1671,6 +1665,84 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self._restore_3d_axis_view(self.real_3d_att_ax, self._default_attitude_3d_view())
         self.real_3d_att_canvas.draw_idle()
 
+    @staticmethod
+    def _state_segments(samples):
+        if not samples.shape[0]:
+            return []
+
+        transitions = []
+        for row in samples:
+            t = float(row[0])
+            state = int(row[1])
+            if not transitions or state != transitions[-1][1]:
+                transitions.append((t, state))
+
+        segments = []
+        for index, (start, state) in enumerate(transitions):
+            end = transitions[index + 1][0] if index + 1 < len(transitions) else start + TIMELINE_OPEN_SEGMENT_SEC
+            segments.append((start, end, state))
+        return segments
+
+    @staticmethod
+    def _cmd_band_color(_state):
+        return QtGui.QColor(33, 150, 243, 70)
+
+    @staticmethod
+    def _flight_band_color(_state):
+        return QtGui.QColor(46, 125, 50, 65)
+
+    def _clear_state_backgrounds(self):
+        for plot, item, _, _, _ in self._state_background_items:
+            plot.removeItem(item)
+        self._state_background_items = []
+
+    def _add_state_band(self, plot, start, end, band, state):
+        color = self._cmd_band_color(state) if band == "cmd" else self._flight_band_color(state)
+        label = cmd_source_label(state) if band == "cmd" else nav_state_label(state)
+        item = QtWidgets.QGraphicsRectItem()
+        item.setPen(pg.mkPen(color))
+        item.setBrush(pg.mkBrush(color))
+        item.setZValue(-20)
+        item.setToolTip(
+            f"{'CMD' if band == 'cmd' else 'FLIGHT'}: {label}\n"
+            f"{start:.3f} - {end:.3f} s"
+        )
+        plot.addItem(item, ignoreBounds=True)
+        self._state_background_items.append((plot, item, band, start, end))
+
+    def _update_state_backgrounds(self, cmd_samples, flight_samples):
+        cmd_segments = [
+            segment for segment in self._state_segments(cmd_samples)
+            if segment[2] == HummingbirdStatus.HB_CMD_SOURCE_DDS
+        ]
+        flight_segments = [
+            segment for segment in self._state_segments(flight_samples)
+            if segment[2] == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+        ]
+        signature = (
+            tuple((round(start, 6), state) for start, _, state in cmd_segments),
+            tuple((round(start, 6), state) for start, _, state in flight_segments),
+        )
+
+        if signature != self._state_background_signature:
+            self._clear_state_backgrounds()
+            plots = self.state_plots + self.act_plots + self.real_time_plots
+            for plot in plots:
+                for start, end, state in cmd_segments:
+                    self._add_state_band(plot, start, end, "cmd", state)
+                for start, end, state in flight_segments:
+                    self._add_state_band(plot, start, end, "flight", state)
+            self._state_background_signature = signature
+
+        for plot, item, band, start, end in self._state_background_items:
+            y_min, y_max = plot.viewRange()[1]
+            span = y_max - y_min
+            if not math.isfinite(span) or span <= 0.0:
+                continue
+            height = span * TIMELINE_BAND_FRACTION
+            y = y_max - height if band == "cmd" else y_min
+            item.setRect(QtCore.QRectF(start, y, max(0.0, end - start), height))
+
     def _update(self):
         nd = self.node
 
@@ -1685,8 +1757,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
                 "motor": nd.buf_motor.get(),
                 "beta": nd.buf_beta.get(),
                 "alpha": nd.buf_alpha.get(),
-                "dxl_beta": nd.buf_dynamixel_beta.get(),
-                "dxl_alpha": nd.buf_dynamixel_alpha.get(),
+                "cmd_state": nd.buf_cmd_state.get(),
+                "flight_state": nd.buf_flight_state.get(),
             }
             if nd.real_mode:
                 data.update({
@@ -1694,7 +1766,9 @@ class ViewerWindow(QtWidgets.QMainWindow):
                     "fmu_pose_pos": nd.buf_fmu_pose_pos.get(),
                     "opti_rpy": nd.buf_opti_rpy.get(),
                     "fmu_pose_rpy": nd.buf_fmu_pose_rpy.get(),
-                    "delay": nd.buf_delay.get(),
+                    "opti_transport_delay": nd.buf_opti_transport_delay.get(),
+                    "opti_hz": nd.buf_opti_hz.get(),
+                    "opti_lost": nd.buf_opti_lost.get(),
                     "pos_error": nd.buf_pos_error.get(),
                 })
 
@@ -1717,7 +1791,7 @@ class ViewerWindow(QtWidgets.QMainWindow):
         def trim(arr):
             return arr[arr[:, 0] >= tl] if arr.shape[0] else arr
 
-        for key in data:
+        for key in data.keys() - {"cmd_state", "flight_state"}:
             data[key] = trim(data[key])
 
         for i in range(3):
@@ -1731,11 +1805,9 @@ class ViewerWindow(QtWidgets.QMainWindow):
         for i in range(4):
             self._set4(data["motor"], f"motor_all{i}", i)
             self._set4(data["alpha"], f"alpha{i}", i)
-            self._set4(data["dxl_alpha"], f"dxl_alpha{i}", i)
 
         for i in range(2):
             self._set3(data["beta"], f"beta{i}", i)
-            self._set3(data["dxl_beta"], f"dxl_beta{i}", i)
 
         if nd.real_mode:
             self._update_real_tab(data)
@@ -1747,10 +1819,12 @@ class ViewerWindow(QtWidgets.QMainWindow):
         if self.real_time_plots:
             self.real_time_plots[0].setXRange(tl, tn, padding=0)
 
+        self._update_state_backgrounds(data["cmd_state"], data["flight_state"])
+
     def _update_real_tab(self, data):
         opti_pos = data["opti_pos"]
         fmu_pos = data["fmu_pose_pos"]
-        delay = data["delay"]
+        opti_transport_delay = data["opti_transport_delay"]
         pos_error = data["pos_error"]
 
         if opti_pos.shape[0] and "opti_xy" in self.cv:
@@ -1766,9 +1840,10 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self._set3(data["opti_rpy"], f"opti_rpy{i}", i)
             self._set3(data["fmu_pose_rpy"], f"fmu_rpy{i}", i)
 
-        self._set_col(delay, "delay_arrival", 1)
-        self._set_col(delay, "delay_value", 2)
-        self._set_col(delay, "match_error", 3)
+        self._set_col(opti_transport_delay, "opti_delay_raw", 1)
+        self._set_col(opti_transport_delay, "opti_delay_avg", 2)
+        self._set_col(data["opti_hz"], "opti_hz", 1)
+        self._set_col(data["opti_lost"], "opti_lost", 1)
         self._set_col(pos_error, "err_norm", 4)
 
     def _update_real_3d(self, opti_pos, fmu_pos):
@@ -1943,15 +2018,30 @@ class ViewerWindow(QtWidgets.QMainWindow):
 def main():
     rclpy.init()
     node = Px4ViewerNode()
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+
+    def spin_node():
+        try:
+            rclpy.spin(node)
+        except (rclpy.executors.ExternalShutdownException, KeyboardInterrupt):
+            pass
+
+    spin_thread = threading.Thread(target=spin_node, daemon=True)
     spin_thread.start()
     app = QtWidgets.QApplication(sys.argv)
     win = ViewerWindow(node)
     win.show()
-    code = app.exec_()
-    node.destroy_node()
-    rclpy.shutdown()
-    node.close_logger()
+
+    previous_sigint_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, lambda _signum, _frame: app.quit())
+    try:
+        code = app.exec_()
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint_handler)
+        if rclpy.ok():
+            rclpy.shutdown()
+        spin_thread.join(timeout=2.0)
+        node.close_logger()
+        node.destroy_node()
     sys.exit(code)
 
 

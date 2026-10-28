@@ -27,7 +27,7 @@ static constexpr uint16_t source_component_id = 1;
 static constexpr double handoff_runtime = 5.0;
 
 // Command frame: local NED position, z-down, yaw as NED heading.
-static constexpr double initial_pose_x_m = 0.0;
+static constexpr double initial_pose_x_m = -0.5;
 static constexpr double initial_pose_y_m = 0.0;
 static constexpr double initial_pose_z_m = -1.0;
 static constexpr double initial_pose_roll_rad = 0.0;
@@ -46,7 +46,8 @@ static constexpr double PITCH_MAX = 50.0 * M_PI / 180.0;
 static constexpr double BETA_LIMIT_RAD = 170.0 * M_PI / 180.0;
 static constexpr double ALPHA_LIMIT_RAD = M_PI / 6.0;
 
-static constexpr double SERVO_TIMEOUT_SEC = 0.2;
+static constexpr double DDS_RECEIVE_TIMEOUT_SEC = 0.2;
+static constexpr double DYNAMIXEL_OUTPUT_TIMEOUT_SEC = 0.2;
 static constexpr double SERVO_RETURN_TIME_SEC = 5.0;
 static constexpr int SERVO_PERIOD_US = static_cast<int>(1000000.0 / RATE_HZ); // not tunable
 

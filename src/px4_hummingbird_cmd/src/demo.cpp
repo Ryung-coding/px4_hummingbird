@@ -382,7 +382,7 @@ private:
 
     const double timeout = (this->now() - last_odometry_time_).seconds();
 
-    if (timeout < params::SERVO_TIMEOUT_SEC) return;
+    if (timeout < params::DDS_RECEIVE_TIMEOUT_SEC) return;
 
     RCLCPP_WARN(this->get_logger(), "Odometry timeout: %.3f sec", timeout);
 

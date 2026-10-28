@@ -25,3 +25,6 @@ viewer:
   fmu_odom_topic: "/fmu/out/vehicle_odometry"
   target_body_name: "Hummingbird"
   opti_origin: [-0.08, -0.524, 0.016] #z-up기준 HB가 있는 위치를 기입
+  opti_delay_avg_sec: 3.0
+  opti_rate_window_sec: 3.0
+  opti_lost_hz_threshold: 50.0

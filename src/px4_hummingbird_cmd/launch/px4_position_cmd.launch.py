@@ -8,7 +8,7 @@ def generate_launch_description():
     path = LaunchConfiguration("path")
 
     return LaunchDescription([
-        DeclareLaunchArgument("path", default_value="pos"),
+        DeclareLaunchArgument("path", default_value="circle_demo"),
         Node(
             package="px4_hummingbird_cmd",
             executable="px4_position_cmd",

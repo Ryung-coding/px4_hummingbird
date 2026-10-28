@@ -344,4 +344,78 @@ inline TargetCMD stepAttPath(double t)
   return cmd;
 }
 
+
+inline TargetCMD circle_demo(double t)
+{
+  static constexpr double HOVER_SEC = 3.0;
+  static constexpr double PERIOD = 30.0;
+  static constexpr double RADIUS = 0.5;
+  static constexpr double PITCH_AMP = 0.0 * M_PI / 180.0;
+
+  TargetCMD cmd;
+
+  if (t < HOVER_SEC)
+  {
+    cmd.x = 0.0;
+    cmd.y = 0.0;
+    cmd.z = 0.0;
+    cmd.roll = 0.0;
+    cmd.pitch = 0.0;
+    cmd.yaw = 0.0;
+    return cmd;
+  }
+
+  const double tm = t - HOVER_SEC;
+  const double w = 2.0 * M_PI / PERIOD;
+
+  cmd.x = RADIUS * (std::cos(w * tm) - 1.0);
+  cmd.y = RADIUS * std::sin(w * tm);
+  cmd.z = 0.0;
+  cmd.roll = 0.0;
+  cmd.pitch = PITCH_AMP * std::sin(w * tm);
+  cmd.yaw = 0.0;
+  return cmd;
+}
+
+inline TargetCMD demo_straight(double t)
+{
+  static constexpr double MOVE_SEC = 3.0;
+  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double DIST = 2.0;
+  static constexpr double PERIOD = 2.0 * (MOVE_SEC + HOLD_SEC);
+
+  TargetCMD cmd;
+  const double tm = std::fmod(std::max(0.0, t), PERIOD);
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = 0.0;
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  if (tm < HOLD_SEC)
+  {
+    cmd.y = 0.0;
+  }
+  else if (tm < HOLD_SEC + MOVE_SEC)
+  {
+    const double a = (tm - HOLD_SEC) / MOVE_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+    cmd.y = DIST * s;
+  }
+  else if (tm < 2.0 * HOLD_SEC + MOVE_SEC)
+  {
+    cmd.y = DIST;
+  }
+  else
+  {
+    const double a = (tm - 2.0 * HOLD_SEC - MOVE_SEC) / MOVE_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+    cmd.y = DIST * (1.0 - s);
+  }
+
+  return cmd;
+}
+
 }  // namespace utils
