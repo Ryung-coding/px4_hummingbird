@@ -155,17 +155,19 @@ inline TargetCMD RC2DDS_handoff(const TargetCMD& initial_pose, HandoffFilters& f
 // Path utils =========================================================
 inline TargetCMD posPath(double t)
 {
-  static constexpr double SEG_SEC = 5.0;
-  static constexpr double XY = 0.0;
+  static constexpr bool TWO_POINT = true;
+
+  static constexpr double SEG_SEC = 2.0;
+  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double XY = 1.0;
 
   TargetCMD cmd;
 
-  const double tm = t;
-  const int phase = static_cast<int>(std::floor(tm / SEG_SEC)) % 4;
-  const double a = std::fmod(tm, SEG_SEC) / SEG_SEC;
-  const double s = a * a * (3.0 - 2.0 * a);
+  const double CYCLE_SEC = SEG_SEC + HOLD_SEC;
+  const int phase = static_cast<int>(std::floor(t / CYCLE_SEC)) % (TWO_POINT ? 2 : 4);
+  const double local_t = std::fmod(t, CYCLE_SEC);
 
-  const std::array<Eigen::Vector2d, 4> corners = 
+  const std::array<Eigen::Vector2d, 4> corners =
   {
     Eigen::Vector2d{XY, 0.0},
     Eigen::Vector2d{XY, XY},
@@ -173,8 +175,27 @@ inline TargetCMD posPath(double t)
     Eigen::Vector2d{0.0, 0.0}
   };
 
-  const Eigen::Vector2d p0 = (phase == 0) ? Eigen::Vector2d{0.0, 0.0} : corners[phase - 1];
-  const Eigen::Vector2d p1 = corners[phase];
+  Eigen::Vector2d p0;
+  Eigen::Vector2d p1;
+
+  if (TWO_POINT)
+  {
+    p0 = (phase == 0) ? Eigen::Vector2d{0.0, 0.0} : Eigen::Vector2d{XY, 0.0};
+    p1 = (phase == 0) ? Eigen::Vector2d{XY, 0.0} : Eigen::Vector2d{0.0, 0.0};
+  }
+  else
+  {
+    p0 = (phase == 0) ? Eigen::Vector2d{0.0, 0.0} : corners[phase - 1];
+    p1 = corners[phase];
+  }
+
+  double s = 1.0;
+
+  if (local_t < SEG_SEC)
+  {
+    const double a = local_t / SEG_SEC;
+    s = a * a * (3.0 - 2.0 * a);
+  }
 
   cmd.x = p0(0) + (p1(0) - p0(0)) * s;
   cmd.y = p0(1) + (p1(1) - p0(1)) * s;
@@ -188,7 +209,7 @@ inline TargetCMD posPath(double t)
 
 inline TargetCMD attPath(double t)
 {
-  static constexpr double TUNE_SEC = 10.0;
+  static constexpr double TUNE_SEC = 40.0;
 
   TargetCMD cmd;
 
@@ -209,13 +230,13 @@ inline TargetCMD attPath(double t)
 inline TargetCMD stepAttPath(double t)
 {
   static constexpr double ZERO_HOLD_SEC = 2.0;
-  static constexpr double RAMP_SEC = 1.0;
-  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double RAMP_SEC = 3.0;
+  static constexpr double HOLD_SEC = 5.0;
 
   static constexpr double SWITCH_DEG = 60.0;
-  static constexpr double FIRST_STEP_DEG = 10.0;
+  static constexpr double FIRST_STEP_DEG = 5.0;
   static constexpr double SECOND_STEP_DEG = 1.0;
-  static constexpr double MAX_DEG = 80.0;
+  static constexpr double MAX_DEG = 60.0;
   static constexpr double DEG2RAD = M_PI / 180.0;
 
   static constexpr int FIRST_STAGE_COUNT = static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
@@ -229,22 +250,30 @@ inline TargetCMD stepAttPath(double t)
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
 
-  if (t < ZERO_HOLD_SEC) return cmd;
-
-  const double ts = t - ZERO_HOLD_SEC;
   const double stage_sec = RAMP_SEC + HOLD_SEC;
-  const int stage = static_cast<int>(std::floor(ts / stage_sec));
+  const int UP_STAGE_COUNT = FIRST_STAGE_COUNT + static_cast<int>((MAX_DEG - SWITCH_DEG) / SECOND_STEP_DEG);
+  const double cycle_sec = ZERO_HOLD_SEC + 2.0 * UP_STAGE_COUNT * stage_sec + ZERO_HOLD_SEC;
+  const double cycle_t = std::fmod(t, cycle_sec);
+
+  if (cycle_t < ZERO_HOLD_SEC) return cmd;
+
+  const double ts = cycle_t - ZERO_HOLD_SEC;
+  if (ts >= 2.0 * UP_STAGE_COUNT * stage_sec) return cmd;
+
+  const int raw_stage = static_cast<int>(std::floor(ts / stage_sec));
   const double stage_t = std::fmod(ts, stage_sec);
+  const bool down = raw_stage >= UP_STAGE_COUNT;
+  const int stage = down ? 2 * UP_STAGE_COUNT - raw_stage - 1 : raw_stage;
 
   double start_deg;
   double target_deg;
 
-  if (stage < FIRST_STAGE_COUNT) 
+  if (stage < FIRST_STAGE_COUNT)
   {
     start_deg = stage * FIRST_STEP_DEG;
     target_deg = start_deg + FIRST_STEP_DEG;
-  } 
-  else 
+  }
+  else
   {
     const int second_stage = stage - FIRST_STAGE_COUNT;
 
@@ -255,22 +284,18 @@ inline TargetCMD stepAttPath(double t)
   start_deg = std::min(start_deg, MAX_DEG);
   target_deg = std::min(target_deg, MAX_DEG);
 
+  if (down) std::swap(start_deg, target_deg);
+
   const double start_angle = start_deg * DEG2RAD;
   const double target_angle = target_deg * DEG2RAD;
 
-  if (start_deg >= MAX_DEG) 
-  {
-    cmd.pitch = MAX_DEG * DEG2RAD;
-    return cmd;
-  }
-
-  if (stage_t < RAMP_SEC) 
+  if (stage_t < RAMP_SEC)
   {
     const double a = stage_t / RAMP_SEC;
     const double s = a * a * (3.0 - 2.0 * a);
 
     cmd.pitch = start_angle + (target_angle - start_angle) * s;
-  } 
+  }
   else cmd.pitch = target_angle;
 
   return cmd;
