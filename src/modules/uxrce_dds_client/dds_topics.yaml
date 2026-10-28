@@ -12,7 +12,7 @@ publications:
 
   - topic: /fmu/out/actuator_servos
     type: px4_msgs::msg::ActuatorServos
-    rate_limit: 100.
+    rate_limit: 200.
 
   - topic: /fmu/out/vehicle_local_position
     type: px4_msgs::msg::VehicleLocalPosition
