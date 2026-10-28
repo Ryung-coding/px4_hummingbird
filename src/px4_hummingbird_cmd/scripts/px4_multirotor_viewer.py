@@ -497,6 +497,7 @@ class Px4ViewerNode(Node):
         self.beta_limit_rad = self.declare_parameter("beta_limit_rad", math.pi).value
         self.alpha_limit_rad = self.declare_parameter("alpha_limit_rad", math.pi / 6.0).value
         self.max_rotor_thrust = self.declare_parameter("max_rotor_thrust", 24.0).value
+        self.actuator_timeout_sec = max(0.001, float(self.declare_parameter("actuator_timeout_sec", 0.2).value))
 
         self.opti_topic = str(self.declare_parameter("opti_topic", "/opti_raw").value)
         self.fmu_odom_topic = str(self.declare_parameter("fmu_odom_topic", "/fmu/out/vehicle_odometry").value)
@@ -529,6 +530,7 @@ class Px4ViewerNode(Node):
             "opti_topic": self.opti_topic,
             "fmu_odom_topic": self.fmu_odom_topic,
             "target_body_name": self.target_body_name,
+            "actuator_timeout_sec": self.actuator_timeout_sec,
             "opti_delay_avg_sec": self.opti_delay_avg_sec,
             "opti_rate_window_sec": self.opti_rate_window_sec,
             "opti_lost_hz_threshold": self.opti_lost_hz_threshold,
@@ -1285,7 +1287,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.timeline_legend = QtWidgets.QLabel(
             "Timeline background: "
             "<span style='background:#90caf9; padding:2px 7px;'>top · CMD DDS</span> "
-            "<span style='background:#a5d6a7; padding:2px 7px;'>bottom · OFFBOARD</span>"
+            "<span style='background:#a5d6a7; padding:2px 7px;'>bottom · OFFBOARD</span> "
+            "<span style='background:#ef9a9a; padding:2px 7px;'>full · ACTUATOR DDS TIMEOUT GAP</span>"
         )
         self.timeline_legend.setTextFormat(QtCore.Qt.RichText)
         self.timeline_legend.setStyleSheet("padding:2px 8px; color:#333333; font-size:10pt;")
@@ -1302,6 +1305,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.real_bottom_time_plots = []
         self._state_background_items = []
         self._state_background_signature = None
+        self._actuator_timeout_items = []
+        self._actuator_timeout_signature = None
         self.window_sec = WINDOW_SEC
         self.replay_range_slider = None
         self.replay_range_label = None
@@ -1743,6 +1748,71 @@ class ViewerWindow(QtWidgets.QMainWindow):
             y = y_max - height if band == "cmd" else y_min
             item.setRect(QtCore.QRectF(start, y, max(0.0, end - start), height))
 
+
+    @staticmethod
+    def _actuator_timeout_segments(samples, end_time, timeout_sec):
+        if not samples.shape[0]:
+            return []
+
+        segments = []
+        previous = float(samples[0, 0])
+
+        for row in samples[1:]:
+            current = float(row[0])
+            if not math.isfinite(current):
+                continue
+            if current < previous:
+                previous = current
+                continue
+
+            timeout_start = previous + timeout_sec
+            if current >= timeout_start:
+                segments.append((previous, current))
+            previous = current
+
+        timeout_start = previous + timeout_sec
+        if end_time >= timeout_start:
+            segments.append((previous, end_time))
+
+        return segments
+
+    def _clear_actuator_timeout_backgrounds(self):
+        for plot, item in self._actuator_timeout_items:
+            plot.removeItem(item)
+        self._actuator_timeout_items = []
+
+    def _update_actuator_timeout_backgrounds(self, segments):
+        signature = tuple((round(start, 3), round(end, 3)) for start, end in segments)
+
+        if signature != self._actuator_timeout_signature:
+            self._clear_actuator_timeout_backgrounds()
+            color = QtGui.QColor(244, 67, 54, 55)
+
+            for plot in self.act_plots:
+                for start, end in segments:
+                    item = QtWidgets.QGraphicsRectItem()
+                    item.setPen(pg.mkPen(color))
+                    item.setBrush(pg.mkBrush(color))
+                    item.setZValue(-30)
+                    item.setRect(QtCore.QRectF(start, 0.0, max(0.0, end - start), 1.0))
+                    item.setToolTip(
+                        f"ACTUATOR DDS RECEIVE TIMEOUT\n"
+                        f"{start:.3f} - {end:.3f} s "
+                        f"(threshold {self.node.actuator_timeout_sec:.3f} s)"
+                    )
+                    plot.addItem(item, ignoreBounds=True)
+                    self._actuator_timeout_items.append((plot, item))
+
+            self._actuator_timeout_signature = signature
+
+        for plot, item in self._actuator_timeout_items:
+            y_min, y_max = plot.viewRange()[1]
+            span = y_max - y_min
+            if not math.isfinite(span) or span <= 0.0:
+                continue
+            rect = item.rect()
+            item.setRect(QtCore.QRectF(rect.x(), y_min, rect.width(), span))
+
     def _update(self):
         nd = self.node
 
@@ -1781,10 +1851,19 @@ class ViewerWindow(QtWidgets.QMainWindow):
             tn = nd.current_replay_time
             tl = max(0.0, tn - self.window_sec)
         else:
+            tn = max(tn, nd._t())
             if tn <= 0.0:
                 self._update_status_bar()
                 return
             tl = tn - self.window_sec
+
+        actuator_timeout_segments = self._actuator_timeout_segments(
+            data["beta"], tn, nd.actuator_timeout_sec)
+        actuator_timeout_segments = [
+            (max(start, tl), min(end, tn))
+            for start, end in actuator_timeout_segments
+            if end >= tl and start <= tn
+        ]
 
         self._update_status_bar()
 
@@ -1820,6 +1899,7 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self.real_time_plots[0].setXRange(tl, tn, padding=0)
 
         self._update_state_backgrounds(data["cmd_state"], data["flight_state"])
+        self._update_actuator_timeout_backgrounds(actuator_timeout_segments)
 
     def _update_real_tab(self, data):
         opti_pos = data["opti_pos"]
