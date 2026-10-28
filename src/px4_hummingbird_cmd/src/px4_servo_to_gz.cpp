@@ -51,7 +51,7 @@ public:
       const rclcpp::Time now = this->now();
       const double inactive_time = (now - last_actuator_msg_time_).seconds();
 
-      if (inactive_time < params::SERVO_TIMEOUT_SEC) { returning_to_zero_ = false; return; }
+      if (inactive_time < params::DDS_RECEIVE_TIMEOUT_SEC) { returning_to_zero_ = false; return; }
       if (!returning_to_zero_)                       { returning_to_zero_ = true; return_start_time_ = now;}
 
       const double return_elapsed = (now - return_start_time_).seconds();

@@ -156,7 +156,7 @@ inline TargetCMD RC2DDS_handoff(const TargetCMD& initial_pose, HandoffFilters& f
 inline TargetCMD posPath(double t)
 {
   static constexpr double SEG_SEC = 5.0;
-  static constexpr double XY = 1.0;
+  static constexpr double XY = 0.0;
 
   TargetCMD cmd;
 
@@ -279,9 +279,9 @@ inline TargetCMD stepAttPath(double t)
 inline TargetCMD circle_demo(double t)
 {
   static constexpr double HOVER_SEC = 3.0;
-  static constexpr double PERIOD = 60.0;
-  static constexpr double RADIUS = 1.0;
-  static constexpr double PITCH_AMP = 30.0 * M_PI / 180.0;
+  static constexpr double PERIOD = 30.0;
+  static constexpr double RADIUS = 0.5;
+  static constexpr double PITCH_AMP = 0.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 

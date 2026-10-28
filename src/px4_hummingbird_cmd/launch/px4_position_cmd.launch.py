@@ -36,9 +36,9 @@ def generate_launch_description():
     replay_log_path = LaunchConfiguration("replay_log_path")
 
     return LaunchDescription([
-        DeclareLaunchArgument("path", default_value="pos"),
+        DeclareLaunchArgument("path", default_value="circle_demo"),
         DeclareLaunchArgument("auto_offboard", default_value="true"),
-        DeclareLaunchArgument("auto_arm", default_value="true"),
+        DeclareLaunchArgument("auto_arm", default_value="false"),
         DeclareLaunchArgument("enable_cmd", default_value="true"),
         DeclareLaunchArgument("enable_viewer", default_value="false"),
         DeclareLaunchArgument("viewer_mode", default_value="sim"),

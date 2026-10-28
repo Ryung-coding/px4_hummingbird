@@ -30,7 +30,7 @@ public:
   {
     trajectory_name_ = this->declare_parameter<std::string>("path", "pos");
     auto_offboard_   = this->declare_parameter<bool>("auto_offboard", true);
-    auto_arm_        = this->declare_parameter<bool>("auto_arm", true);
+    auto_arm_        = this->declare_parameter<bool>("auto_arm", false);
 
     offboard_mode_publisher_   = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
     trajectory_publisher_      = this->create_publisher<px4_msgs::msg::TrajectorySetpoint6dof>("/fmu/in/trajectory_setpoint6dof", 10);
@@ -168,9 +168,9 @@ private:
     const bool vehicle_armed = vehicle_status_.arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
 
     // Arm request
-    if (!vehicle_armed)
+    if (!vehicle_armed && auto_arm_)
     {
-      if (auto_arm_ && elapsed_sec - last_arm_request_time_sec_ >= params::message_timeout_sec + params::command_repeat_sec)
+      if (elapsed_sec - last_arm_request_time_sec_ >= params::message_timeout_sec + params::command_repeat_sec)
       {
         px4_msgs::msg::VehicleCommand message{};
 
@@ -192,6 +192,11 @@ private:
       }
 
       return;
+    }
+
+    if (!vehicle_armed)
+    {
+      RCLCPP_INFO(this->get_logger(), "Auto-arm disabled. Starting setpoint publishing without sending an arm command.");
     }
 
     start_RC2DDS_handoff();
@@ -394,7 +399,9 @@ private:
 
     const bool vehicle_armed = vehicle_status_.arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
 
-    if (control_mode_ == ControlMode::path_active && (!offboard_mode_active || !vehicle_armed))
+    const bool arm_not_ready = auto_arm_ && !vehicle_armed;
+
+    if (control_mode_ == ControlMode::path_active && (!offboard_mode_active || arm_not_ready))
     {
       control_mode_ = offboard_mode_active ? ControlMode::wait_arm : ControlMode::wait_offboard;
       RCLCPP_WARN(this->get_logger(),"Vehicle left active control state. Position setpoints stopped.");
