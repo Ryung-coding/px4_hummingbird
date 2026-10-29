@@ -46,7 +46,8 @@ static constexpr double PITCH_MAX = 50.0 * M_PI / 180.0;
 static constexpr double BETA_LIMIT_RAD = 170.0 * M_PI / 180.0;
 static constexpr double ALPHA_LIMIT_RAD = M_PI / 6.0;
 
-static constexpr double DDS_RECEIVE_TIMEOUT_SEC = 0.2;
+static constexpr double DDS_RECEIVE_TIMEOUT_SEC = 0.5;
+static constexpr double SERVO_DIAGNOSTIC_GAP_SEC = 0.05;
 static constexpr double DYNAMIXEL_OUTPUT_TIMEOUT_SEC = 0.2;
 static constexpr double SERVO_RETURN_TIME_SEC = 5.0;
 static constexpr int SERVO_PERIOD_US = static_cast<int>(1000000.0 / RATE_HZ); // not tunable
@@ -55,6 +56,7 @@ static constexpr char DXL_PORT_NAME[] = "/dev/dynamixel";
 
 static constexpr int DXL_BAUDRATE = 1000000;                // 1 Mbps setting
 static constexpr double STARTUP_RETURN_TIME_SEC = 2.0;
+static constexpr double SERVO_STARTUP_RETURN_TIME_SEC = STARTUP_RETURN_TIME_SEC;
 static constexpr int FINAL_ZERO_REPEAT_COUNT = 5;
 static constexpr int FINAL_ZERO_REPEAT_INTERVAL_MS = 5;
 
@@ -66,6 +68,8 @@ static constexpr int PORT_RETRY_INTERVAL_MS = 500;          //do not change
 static constexpr int REGISTER_RETRY_INTERVAL_MS = 20;       //do not change
 static constexpr uint16_t ADDR_OPERATING_MODE = 11;         //do not change
 static constexpr uint16_t ADDR_TORQUE_ENABLE = 64;          //do not change
+static constexpr uint16_t ADDR_BUS_WATCHDOG = 98;           //do not change
+static constexpr uint16_t ADDR_HARDWARE_ERROR_STATUS = 70;  //do not change
 static constexpr uint16_t ADDR_VELOCITY_I_GAIN = 76;        //do not change
 static constexpr uint16_t ADDR_VELOCITY_P_GAIN = 78;        //do not change
 static constexpr uint16_t ADDR_POSITION_D_GAIN = 80;        //do not change

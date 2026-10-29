@@ -15,13 +15,23 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from px4_msgs.msg import ActuatorMotors, ActuatorServos, VehicleAttitude, VehicleStatus
+from geometry_msgs.msg import PoseStamped
+from px4_msgs.msg import ActuatorMotors, ActuatorServos, VehicleAttitude, VehicleOdometry, VehicleStatus
 
 
 STREAMS = {
+    "/nokov_raw/Hummingbird/pose": PoseStamped,
+    "/opti_raw": PoseStamped,
+    "/fmu/in/vehicle_visual_odometry": VehicleOdometry,
+    "/fmu/out/vehicle_odometry": VehicleOdometry,
     "/fmu/out/vehicle_attitude": VehicleAttitude,
     "/fmu/out/actuator_servos": ActuatorServos,
     "/fmu/out/actuator_motors": ActuatorMotors,
+}
+OPTI_STREAMS = {
+    "/nokov_raw/Hummingbird/pose",
+    "/opti_raw",
+    "/fmu/in/vehicle_visual_odometry",
 }
 
 
@@ -40,25 +50,26 @@ def process_pids(executable):
 
 
 class DdsStability(Node):
-    def __init__(self, log_path, gap_s, duration_s, expect_servos):
+    def __init__(self, log_path, gap_s, duration_s, expect_servos, expect_opti):
         super().__init__("hummingbird_dds_stability")
         self.log = log_path.open("w", encoding="utf-8", buffering=65536)
         self.gap_s = gap_s
         self.duration_s = duration_s
         self.expect_servos = expect_servos
+        self.expect_opti = expect_opti
         self.started_ns = time.monotonic_ns()
         self.last_report_ns = self.started_ns
         self.last_flush_ns = self.started_ns
         self.armed = None
         self.last_processes = None
         self.states = {
-            topic: {"last_ns": None, "last_px4_us": None, "count": 0, "reported_count": 0,
+            topic: {"last_ns": None, "last_source_us": None, "count": 0, "reported_count": 0,
                     "gaps": 0, "max_gap_ms": 0.0, "intervals_ms": deque(maxlen=2000),
                     "silent": False, "no_data": False}
             for topic in STREAMS
         }
         self.record("start", host=socket.gethostname(), domain=os.environ.get("ROS_DOMAIN_ID"),
-                    gap_s=gap_s, duration_s=duration_s, expect_servos=expect_servos)
+                    gap_s=gap_s, duration_s=duration_s, expect_servos=expect_servos, expect_opti=expect_opti)
 
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=20, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._subscriptions = [
@@ -67,6 +78,7 @@ class DdsStability(Node):
         ]
         self._status_sub = self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status", self.on_status, qos)
         self._watchdog = self.create_timer(0.1, self.check_silence)
+        self._process_watchdog = self.create_timer(0.2, self.check_processes)
         self._report = self.create_timer(5.0, self.report)
 
     def record(self, event, **fields):
@@ -80,10 +92,24 @@ class DdsStability(Node):
             self.armed = armed
             self.record("arming", armed=armed, nav_state=msg.nav_state)
 
+    @staticmethod
+    def source_timestamp_us(msg):
+        if hasattr(msg, "timestamp"):
+            return int(msg.timestamp)
+        if hasattr(msg, "header"):
+            stamp = msg.header.stamp
+            value = stamp.sec * 1_000_000 + stamp.nanosec // 1000
+            return value or None
+        return None
+
+    @staticmethod
+    def finite_values(values):
+        return [float(value) if math.isfinite(value) else None for value in values]
+
     def on_sample(self, topic, msg):
         now = time.monotonic_ns()
         state = self.states[topic]
-        timestamp_us = msg.timestamp
+        source_us = self.source_timestamp_us(msg)
         if state["last_ns"] is not None:
             gap_ms = (now - state["last_ns"]) / 1e6
             state["intervals_ms"].append(gap_ms)
@@ -91,25 +117,41 @@ class DdsStability(Node):
             if gap_ms >= self.gap_s * 1000.0 and self.is_expected(topic):
                 if not state["silent"]:
                     state["gaps"] += 1
-                last_px4_us = state["last_px4_us"]
-                px4_dt_ms = None if last_px4_us is None else (timestamp_us - last_px4_us) / 1000.0
-                self.record("gap", topic=topic, received_gap_ms=round(gap_ms, 3), px4_dt_ms=px4_dt_ms)
-                print(f"GAP {topic}: {gap_ms:.0f} ms (total {state['gaps']})", flush=True)
+                last_source_us = state["last_source_us"]
+                source_dt_ms = None if source_us is None or last_source_us is None else (source_us - last_source_us) / 1000.0
+                self.record("gap", topic=topic, received_gap_ms=round(gap_ms, 3), source_dt_ms=source_dt_ms)
+                print(f"GAP {topic}: received={gap_ms:.1f}ms source_dt={source_dt_ms}ms "
+                      f"(total {state['gaps']})", flush=True)
 
         state["last_ns"] = now
-        state["last_px4_us"] = timestamp_us
+        state["last_source_us"] = source_us
         state["count"] += 1
         state["silent"] = False
-        data = {"topic": topic, "px4_timestamp_us": timestamp_us}
-        if topic == "/fmu/out/actuator_servos":
-            data["control"] = [float(value) if math.isfinite(value) else None for value in msg.control]
+        data = {"topic": topic, "source_timestamp_us": source_us}
+        if hasattr(msg, "timestamp"):
+            data["px4_timestamp_us"] = int(msg.timestamp)
+        if isinstance(msg, PoseStamped):
+            data["frame_id"] = msg.header.frame_id
+            data["position"] = self.finite_values((msg.pose.position.x, msg.pose.position.y, msg.pose.position.z))
+            data["orientation_xyzw"] = self.finite_values(
+                (msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w))
+        elif isinstance(msg, VehicleOdometry):
+            data["position"] = self.finite_values(msg.position)
+            data["q_wxyz"] = self.finite_values(msg.q)
+            data["velocity"] = self.finite_values(msg.velocity)
+        elif isinstance(msg, VehicleAttitude):
+            data["q_wxyz"] = self.finite_values(msg.q)
+        elif isinstance(msg, (ActuatorServos, ActuatorMotors)):
+            data["control"] = self.finite_values(msg.control)
         self.record("sample", **data)
 
     def is_expected(self, topic):
         if topic == "/fmu/out/vehicle_attitude":
             return True
-        if topic == "/fmu/out/actuator_servos" and self.expect_servos:
-            return True
+        if topic == "/fmu/out/actuator_servos":
+            return self.expect_servos or self.armed is True
+        if topic in OPTI_STREAMS:
+            return self.expect_opti
         return self.armed is True
 
     def check_silence(self):
@@ -147,15 +189,27 @@ class DdsStability(Node):
         ordered = sorted(intervals_ms)
         return round(ordered[math.ceil(0.99 * len(ordered)) - 1], 2)
 
+    @staticmethod
+    def current_processes():
+        return {
+            "agent": process_pids("MicroXRCEAgent"),
+            "servo": process_pids("px4_servo_to_dynamixel"),
+        }
+
+    def check_processes(self):
+        processes = self.current_processes()
+        if processes == self.last_processes:
+            return
+        previous = self.last_processes
+        self.last_processes = processes
+        self.record("process_change", previous=previous, **processes)
+        print(f"PROCESS CHANGE agent={processes['agent']} servo={processes['servo']}", flush=True)
+
     def report(self):
         now = time.monotonic_ns()
         interval_s = (now - self.last_report_ns) / 1e9
         self.last_report_ns = now
-        processes = {"agent": process_pids("MicroXRCEAgent"),
-                     "servo": process_pids("px4_servo_to_dynamixel")}
-        if processes != self.last_processes:
-            self.record("process_change", **processes)
-            self.last_processes = processes
+        processes = self.last_processes or self.current_processes()
 
         snapshots = {}
         for topic, state in self.states.items():
@@ -177,6 +231,10 @@ class DdsStability(Node):
 
         elapsed_s = (now - self.started_ns) / 1e9
         print(f"{elapsed_s:.0f}s agent={'up' if processes['agent'] else 'DOWN'} "
+              f"nokov[{short('/nokov_raw/Hummingbird/pose')}] "
+              f"opti[{short('/opti_raw')}] "
+              f"visual_in[{short('/fmu/in/vehicle_visual_odometry')}] "
+              f"odom_out[{short('/fmu/out/vehicle_odometry')}] "
               f"att[{short('/fmu/out/vehicle_attitude')}] "
               f"servo[{short('/fmu/out/actuator_servos')}] "
               f"servo_node={'up' if processes['servo'] else 'off'}", flush=True)
@@ -192,10 +250,11 @@ class DdsStability(Node):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Measure continuous PX4 DDS output stability on Orin")
+    parser = argparse.ArgumentParser(description="Trace HummingBird Opti, PX4 DDS, Agent, and servo-node stability")
     parser.add_argument("--duration", type=float, default=600.0, help="seconds to monitor (default: 600, 0 until Ctrl-C)")
-    parser.add_argument("--gap", type=float, default=0.2, help="gap threshold in seconds (default: 0.2)")
+    parser.add_argument("--gap", type=float, default=0.05, help="gap report threshold in seconds (default: 0.05)")
     parser.add_argument("--expect-servos", action="store_true", help="also require servo messages while disarmed")
+    parser.add_argument("--expect-opti", action="store_true", help="require the Opti-to-FMU visual-odometry path")
     parser.add_argument("--output", type=Path, help="JSONL file (default: debug/logs/dds_<UTC>.jsonl)")
     args = parser.parse_args()
     if args.duration < 0 or args.gap <= 0:
@@ -206,8 +265,9 @@ def main():
     rclpy.init()
     node = None
     try:
-        node = DdsStability(log_path, args.gap, args.duration, args.expect_servos)
-        print(f"DDS stability monitor: {args.duration:g}s, gap threshold {args.gap:g}s, log {log_path}", flush=True)
+        node = DdsStability(log_path, args.gap, args.duration, args.expect_servos, args.expect_opti)
+        print(f"DDS path monitor: {args.duration:g}s, gap threshold {args.gap:g}s, "
+              f"expect_servos={args.expect_servos}, expect_opti={args.expect_opti}, log {log_path}", flush=True)
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
