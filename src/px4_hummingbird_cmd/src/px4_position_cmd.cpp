@@ -281,6 +281,8 @@ private:
     if      (trajectory_name_ == "pos")      path_target = utils::posPath(trajectory_time_sec);
     else if (trajectory_name_ == "att")      path_target = utils::attPath(trajectory_time_sec);
     else if (trajectory_name_ == "step_att") path_target = utils::stepAttPath(trajectory_time_sec);
+    else if (trajectory_name_ == "circle_demo") path_target = utils::circle_demo(trajectory_time_sec);
+    else if (trajectory_name_ == "demo_straight") path_target = utils::demo_straight(trajectory_time_sec);
     else RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Unknown path. Holding initial pose.");
 
     utils::TargetCMD target = path_target;
