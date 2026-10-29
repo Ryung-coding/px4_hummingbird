@@ -37,6 +37,7 @@ public:
       lpf.reset(0.0);
     }
     last_dds_receive_steady_ = std::chrono::steady_clock::now();
+    node_ready_steady_ = last_dds_receive_steady_;
     last_write_rate_log_steady_ = last_dds_receive_steady_;
 
     dds_sub_ = this->create_subscription<px4_msgs::msg::ActuatorServos>("/fmu/out/actuator_servos", rclcpp::SensorDataQoS(), std::bind(&Px4ServoToDynamixel::dds_callback, this, std::placeholders::_1));
@@ -381,6 +382,11 @@ private:
     }
 
     const auto receive_time = std::chrono::steady_clock::now();
+    if (!dds_received_)
+    {
+      RCLCPP_INFO(this->get_logger(), "SERVO_DDS_FIRST_SAMPLE wait=%.3fs",
+        std::chrono::duration<double>(receive_time - node_ready_steady_).count());
+    }
     if (dds_received_)
     {
       const double host_gap_sec = std::chrono::duration<double>(receive_time - last_dds_receive_steady_).count();
@@ -417,7 +423,18 @@ private:
 
   void timeout_callback()
   {
-    if (!dds_received_ || !have_goal_) return;
+    if (!dds_received_ || !have_goal_)
+    {
+      const double wait_sec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - node_ready_steady_).count();
+      if (wait_sec >= 1.0 && !no_dds_reported_)
+      {
+        RCLCPP_ERROR(this->get_logger(), "SERVO_DDS_NO_DATA wait=%.3fs topic=/fmu/out/actuator_servos; no goal has been sent",
+          wait_sec);
+        no_dds_reported_ = true;
+      }
+      return;
+    }
 
     const auto now = std::chrono::steady_clock::now();
     const double receive_gap_sec = std::chrono::duration<double>(now - last_dds_receive_steady_).count();
@@ -471,8 +488,13 @@ private:
       std::chrono::steady_clock::now() - last_write_rate_log_steady_).count();
     if (rate_window_sec >= 5.0)
     {
+      const double write_rate_hz = write_count_window_ / rate_window_sec;
+      if (write_rate_hz < 0.8 * params::RATE_HZ)
+      {
+        RCLCPP_WARN(this->get_logger(), "SERVO_TX_RATE_LOW actual=%.1fHz target=%dHz", write_rate_hz, params::RATE_HZ);
+      }
       RCLCPP_INFO(this->get_logger(), "Dynamixel SyncWrite rate: %.1f Hz (target %d Hz)",
-        write_count_window_ / rate_window_sec, params::RATE_HZ);
+        write_rate_hz, params::RATE_HZ);
       write_count_window_ = 0;
       last_write_rate_log_steady_ = std::chrono::steady_clock::now();
     }
@@ -567,6 +589,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::ActuatorServos>::SharedPtr dds_sub_;
   rclcpp::TimerBase::SharedPtr timeout_timer_;
   std::chrono::steady_clock::time_point last_dds_receive_steady_{};
+  std::chrono::steady_clock::time_point node_ready_steady_{};
   std::chrono::steady_clock::time_point return_start_steady_{};
   std::chrono::steady_clock::time_point last_timeout_start_{};
   std::chrono::steady_clock::time_point last_reopen_attempt_{};
@@ -576,6 +599,7 @@ private:
   unsigned int write_count_window_ = 0;
 
   bool dds_received_ = false;
+  bool no_dds_reported_ = false;
   bool dds_timeout_reported_ = false;
   bool returning_to_zero_ = false;
   bool zero_return_complete_ = false;

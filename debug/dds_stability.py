@@ -16,7 +16,11 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import PoseStamped
-from px4_msgs.msg import ActuatorMotors, ActuatorServos, VehicleAttitude, VehicleOdometry, VehicleStatus
+from px4_msgs.msg import (
+    ActuatorMotors, ActuatorServos, HummingbirdStatus, OffboardControlMode,
+    TrajectorySetpoint6dof, VehicleAttitude, VehicleLocalPosition, VehicleOdometry,
+    VehicleStatus,
+)
 
 
 STREAMS = {
@@ -27,6 +31,11 @@ STREAMS = {
     "/fmu/out/vehicle_attitude": VehicleAttitude,
     "/fmu/out/actuator_servos": ActuatorServos,
     "/fmu/out/actuator_motors": ActuatorMotors,
+    "/fmu/out/hummingbird_status": HummingbirdStatus,
+    "/fmu/out/vehicle_local_position": VehicleLocalPosition,
+    "/fmu/out/vehicle_status": VehicleStatus,
+    "/fmu/in/offboard_control_mode": OffboardControlMode,
+    "/fmu/in/trajectory_setpoint6dof": TrajectorySetpoint6dof,
 }
 OPTI_STREAMS = {
     "/nokov_raw/Hummingbird/pose",
@@ -61,6 +70,8 @@ class DdsStability(Node):
         self.last_report_ns = self.started_ns
         self.last_flush_ns = self.started_ns
         self.armed = None
+        self.nav_state = None
+        self.hb_source = None
         self.last_processes = None
         self.states = {
             topic: {"last_ns": None, "last_source_us": None, "count": 0, "reported_count": 0,
@@ -76,7 +87,6 @@ class DdsStability(Node):
             self.create_subscription(msg_type, topic, lambda msg, name=topic: self.on_sample(name, msg), qos)
             for topic, msg_type in STREAMS.items()
         ]
-        self._status_sub = self.create_subscription(VehicleStatus, "/fmu/out/vehicle_status", self.on_status, qos)
         self._watchdog = self.create_timer(0.1, self.check_silence)
         self._process_watchdog = self.create_timer(0.2, self.check_processes)
         self._report = self.create_timer(5.0, self.report)
@@ -88,9 +98,13 @@ class DdsStability(Node):
 
     def on_status(self, msg):
         armed = msg.arming_state == VehicleStatus.ARMING_STATE_ARMED
-        if armed != self.armed:
-            self.armed = armed
-            self.record("arming", armed=armed, nav_state=msg.nav_state)
+        state = (armed, msg.nav_state, msg.failsafe, msg.failure_detector_status)
+        if state != getattr(self, "last_vehicle_state", None):
+            self.record("vehicle_state", armed=armed, nav_state=msg.nav_state,
+                        failsafe=msg.failsafe, failure_detector=msg.failure_detector_status)
+            self.last_vehicle_state = state
+        self.armed = armed
+        self.nav_state = msg.nav_state
 
     @staticmethod
     def source_timestamp_us(msg):
@@ -109,12 +123,31 @@ class DdsStability(Node):
     def on_sample(self, topic, msg):
         now = time.monotonic_ns()
         state = self.states[topic]
+        if isinstance(msg, VehicleStatus):
+            self.on_status(msg)
+        elif isinstance(msg, VehicleLocalPosition):
+            position_state = (msg.xy_valid, msg.z_valid, msg.xy_reset_counter,
+                              msg.z_reset_counter, msg.dead_reckoning)
+            if position_state != getattr(self, "last_position_state", None):
+                self.record("position_state", xy_valid=msg.xy_valid, z_valid=msg.z_valid,
+                            xy_reset=msg.xy_reset_counter, z_reset=msg.z_reset_counter,
+                            dead_reckoning=msg.dead_reckoning,
+                            position=self.finite_values((msg.x, msg.y, msg.z)))
+                self.last_position_state = position_state
+        elif isinstance(msg, HummingbirdStatus):
+            mode = (msg.hb_cmd_source, msg.hb_ctrl_mode, msg.dds_command_enabled,
+                    msg.fully_actuated_control_enabled)
+            if mode != getattr(self, "last_hb_mode", None):
+                self.record("hb_mode", source=msg.hb_cmd_source, control=msg.hb_ctrl_mode,
+                            dds_enabled=msg.dds_command_enabled, fully_enabled=msg.fully_actuated_control_enabled)
+                self.last_hb_mode = mode
+            self.hb_source = msg.hb_cmd_source
         source_us = self.source_timestamp_us(msg)
         if state["last_ns"] is not None:
             gap_ms = (now - state["last_ns"]) / 1e6
             state["intervals_ms"].append(gap_ms)
             state["max_gap_ms"] = max(state["max_gap_ms"], gap_ms)
-            if gap_ms >= self.gap_s * 1000.0 and self.is_expected(topic):
+            if gap_ms >= self.silence_limit(topic) * 1000.0 and self.is_expected(topic):
                 if not state["silent"]:
                     state["gaps"] += 1
                 last_source_us = state["last_source_us"]
@@ -123,6 +156,10 @@ class DdsStability(Node):
                 print(f"GAP {topic}: received={gap_ms:.1f}ms source_dt={source_dt_ms}ms "
                       f"(total {state['gaps']})", flush=True)
 
+        if state["silent"] or state["no_data"]:
+            self.record("recovered", topic=topic, silent=state["silent"], no_data=state["no_data"])
+            print(f"RECOVERED {topic}", flush=True)
+        state["no_data"] = False
         state["last_ns"] = now
         state["last_source_us"] = source_us
         state["count"] += 1
@@ -143,9 +180,44 @@ class DdsStability(Node):
             data["q_wxyz"] = self.finite_values(msg.q)
         elif isinstance(msg, (ActuatorServos, ActuatorMotors)):
             data["control"] = self.finite_values(msg.control)
+        elif isinstance(msg, VehicleLocalPosition):
+            data.update(position=self.finite_values((msg.x, msg.y, msg.z)),
+                        velocity=self.finite_values((msg.vx, msg.vy, msg.vz)),
+                        xy_valid=msg.xy_valid, z_valid=msg.z_valid,
+                        xy_reset=msg.xy_reset_counter, z_reset=msg.z_reset_counter,
+                        dead_reckoning=msg.dead_reckoning)
+        elif isinstance(msg, VehicleStatus):
+            data.update(nav_state=msg.nav_state, arming_state=msg.arming_state,
+                        failsafe=msg.failsafe, failure_detector=msg.failure_detector_status)
+        elif isinstance(msg, HummingbirdStatus):
+            data.update(source=msg.hb_cmd_source, control=msg.hb_ctrl_mode,
+                        dds_enabled=msg.dds_command_enabled,
+                        fully_enabled=msg.fully_actuated_control_enabled)
+        elif isinstance(msg, OffboardControlMode):
+            data.update(position=msg.position, velocity=msg.velocity, attitude=msg.attitude,
+                        direct_actuator=msg.direct_actuator)
+        elif isinstance(msg, TrajectorySetpoint6dof):
+            data.update(position=self.finite_values(msg.position),
+                        quaternion=self.finite_values(msg.quaternion))
         self.record("sample", **data)
 
+    def silence_limit(self, topic):
+        if topic in {"/fmu/out/vehicle_status", "/fmu/out/hummingbird_status"}:
+            return max(self.gap_s, 1.0)
+        if topic in {"/fmu/out/vehicle_local_position", "/fmu/in/offboard_control_mode",
+                     "/fmu/in/trajectory_setpoint6dof"}:
+            return max(self.gap_s, 0.1)
+        return self.gap_s
+
     def is_expected(self, topic):
+        if topic in {"/fmu/out/vehicle_status", "/fmu/out/hummingbird_status",
+                     "/fmu/out/vehicle_local_position"}:
+            return True
+        if topic == "/fmu/in/offboard_control_mode":
+            return self.hb_source == HummingbirdStatus.HB_CMD_SOURCE_DDS
+        if topic == "/fmu/in/trajectory_setpoint6dof":
+            return self.hb_source == HummingbirdStatus.HB_CMD_SOURCE_DDS and (
+                self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD)
         if topic == "/fmu/out/vehicle_attitude":
             return True
         if topic == "/fmu/out/actuator_servos":
@@ -167,7 +239,7 @@ class DdsStability(Node):
                     print(f"NO DATA {topic}: no samples since monitor start", flush=True)
                 continue
             age_s = (now - last_ns) / 1e9
-            if age_s >= self.gap_s and not state["silent"]:
+            if age_s >= self.silence_limit(topic) and not state["silent"]:
                 state["silent"] = True
                 state["gaps"] += 1
                 self.record("silence", topic=topic, age_s=round(age_s, 3))
@@ -194,6 +266,8 @@ class DdsStability(Node):
         return {
             "agent": process_pids("MicroXRCEAgent"),
             "servo": process_pids("px4_servo_to_dynamixel"),
+            "opti": process_pids("mocap_to_px4"),
+            "cmd": process_pids("px4_position_cmd"),
         }
 
     def check_processes(self):
@@ -221,7 +295,8 @@ class DdsStability(Node):
                                 "max_gap_ms": round(state["max_gap_ms"], 2), "p99_ms": self.p99(state["intervals_ms"]),
                                 "publishers": len(self.get_publishers_info_by_topic(topic))}
 
-        self.record("health", processes=processes, armed=self.armed, streams=snapshots)
+        self.record("health", processes=processes, armed=self.armed,
+                    nav_state=self.nav_state, hb_source=self.hb_source, streams=snapshots)
         self.log.flush()
         def short(topic):
             values = snapshots[topic]
@@ -237,6 +312,9 @@ class DdsStability(Node):
               f"odom_out[{short('/fmu/out/vehicle_odometry')}] "
               f"att[{short('/fmu/out/vehicle_attitude')}] "
               f"servo[{short('/fmu/out/actuator_servos')}] "
+              f"hb[{short('/fmu/out/hummingbird_status')}] "
+              f"pos[{short('/fmu/out/vehicle_local_position')}] "
+              f"offboard_in[{short('/fmu/in/offboard_control_mode')}] "
               f"servo_node={'up' if processes['servo'] else 'off'}", flush=True)
 
     def close(self):

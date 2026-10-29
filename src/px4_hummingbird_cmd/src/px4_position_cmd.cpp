@@ -53,9 +53,11 @@ public:
     last_local_position_time_ = node_start_time_;
     last_vehicle_attitude_time_ = node_start_time_;
     last_vehicle_status_time_ = node_start_time_;
+    last_control_tick_time_ = node_start_time_;
 
     // Control Timer (Main Loop)
     control_timer_ = this->create_wall_timer(timer_period, std::bind(&Px4PositionCommand::on_tick, this));
+    diagnostic_timer_ = this->create_wall_timer(std::chrono::milliseconds(100), std::bind(&Px4PositionCommand::check_inputs, this));
   }
 
 private:
@@ -67,9 +69,50 @@ private:
     RC2DDS_handoff
   };
 
+  void note_input(const char * topic, bool received, std::chrono::steady_clock::time_point last,
+                  bool & missing, double gap_limit_sec)
+  {
+    const double gap_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - last).count();
+    if (received && gap_sec >= gap_limit_sec)
+    {
+      RCLCPP_WARN(this->get_logger(), "CMD_INPUT_GAP topic=%s gap=%.3fs", topic, gap_sec);
+    }
+    if (missing)
+    {
+      RCLCPP_INFO(this->get_logger(), "CMD_INPUT_RECOVERED topic=%s gap=%.3fs", topic, gap_sec);
+      missing = false;
+    }
+  }
+
+  void check_input(const char * topic, bool received, std::chrono::steady_clock::time_point last, bool & missing)
+  {
+    const double age_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - last).count();
+    if (age_sec >= params::message_timeout_sec && !missing)
+    {
+      RCLCPP_ERROR(this->get_logger(), "CMD_INPUT_TIMEOUT topic=%s received=%d age=%.3fs", topic, received, age_sec);
+      missing = true;
+    }
+  }
+
+  void check_inputs()
+  {
+    check_input("/fmu/out/hummingbird_status", has_controller_mode_, last_controller_mode_time_, controller_mode_missing_);
+    check_input("/fmu/out/vehicle_local_position", has_local_position_, last_local_position_time_, local_position_missing_);
+    check_input("/fmu/out/vehicle_attitude", has_vehicle_attitude_, last_vehicle_attitude_time_, vehicle_attitude_missing_);
+    check_input("/fmu/out/vehicle_status", has_vehicle_status_, last_vehicle_status_time_, vehicle_status_missing_);
+  }
+
   // DDS= or RC= (hb_cmd_source)
   void controller_mode_callback(const px4_msgs::msg::HummingbirdStatus::SharedPtr message)
   {
+    note_input("/fmu/out/hummingbird_status", has_controller_mode_, last_controller_mode_time_, controller_mode_missing_, 0.2);
+    if (!has_controller_mode_ || controller_mode_.hb_cmd_source != message->hb_cmd_source ||
+        controller_mode_.hb_ctrl_mode != message->hb_ctrl_mode)
+    {
+      RCLCPP_INFO(this->get_logger(), "CMD_HB_MODE source=%u control=%u dds_enabled=%d fully_enabled=%d",
+        static_cast<unsigned>(message->hb_cmd_source), static_cast<unsigned>(message->hb_ctrl_mode),
+        message->dds_command_enabled, message->fully_actuated_control_enabled);
+    }
     controller_mode_ = *message;
     has_controller_mode_ = true;
     last_controller_mode_time_ = std::chrono::steady_clock::now();
@@ -78,6 +121,18 @@ private:
   // Local Position (x,y,z,heading) in NED
   void local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr message)
   {
+    note_input("/fmu/out/vehicle_local_position", has_local_position_, last_local_position_time_, local_position_missing_, 0.1);
+    if (!has_local_position_ || local_position_.xy_valid != message->xy_valid || local_position_.z_valid != message->z_valid ||
+        local_position_.xy_reset_counter != message->xy_reset_counter || local_position_.z_reset_counter != message->z_reset_counter)
+    {
+      RCLCPP_INFO(this->get_logger(), "CMD_POSITION_STATE xy_valid=%d z_valid=%d xy_reset=%u z_reset=%u pos=(%.3f,%.3f,%.3f)",
+        message->xy_valid, message->z_valid, static_cast<unsigned>(message->xy_reset_counter),
+        static_cast<unsigned>(message->z_reset_counter), message->x, message->y, message->z);
+      if (!message->xy_valid || !message->z_valid)
+      {
+        RCLCPP_WARN(this->get_logger(), "CMD_POSITION_INVALID xy_valid=%d z_valid=%d", message->xy_valid, message->z_valid);
+      }
+    }
     local_position_ = *message;
     has_local_position_ = true;
     last_local_position_time_ = std::chrono::steady_clock::now();
@@ -86,6 +141,7 @@ private:
   // Attitude quaternion
   void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr message)
   {
+    note_input("/fmu/out/vehicle_attitude", has_vehicle_attitude_, last_vehicle_attitude_time_, vehicle_attitude_missing_, 0.1);
     vehicle_attitude_ = *message;
     has_vehicle_attitude_ = true;
     last_vehicle_attitude_time_ = std::chrono::steady_clock::now();
@@ -94,6 +150,20 @@ private:
   // PX4 status, Offboard on/off, Armming on/off, Navigation state
   void vehicle_status_callback(const px4_msgs::msg::VehicleStatus::SharedPtr message)
   {
+    note_input("/fmu/out/vehicle_status", has_vehicle_status_, last_vehicle_status_time_, vehicle_status_missing_, 0.5);
+    if (!has_vehicle_status_ || vehicle_status_.nav_state != message->nav_state ||
+        vehicle_status_.arming_state != message->arming_state || vehicle_status_.failsafe != message->failsafe ||
+        vehicle_status_.failure_detector_status != message->failure_detector_status)
+    {
+      RCLCPP_INFO(this->get_logger(), "CMD_VEHICLE_STATE nav=%u armed=%u failsafe=%d failure_detector=%u",
+        static_cast<unsigned>(message->nav_state), static_cast<unsigned>(message->arming_state), message->failsafe,
+        static_cast<unsigned>(message->failure_detector_status));
+      if (message->failsafe || message->failure_detector_status != 0)
+      {
+        RCLCPP_WARN(this->get_logger(), "CMD_VEHICLE_FAILURE failsafe=%d detector=%u",
+          message->failsafe, static_cast<unsigned>(message->failure_detector_status));
+      }
+    }
     vehicle_status_ = *message;
     has_vehicle_status_ = true;
     last_vehicle_status_time_ = std::chrono::steady_clock::now();
@@ -333,6 +403,12 @@ private:
   void on_tick()
   {
     const auto current_steady_time = std::chrono::steady_clock::now();
+    const double tick_gap_sec = std::chrono::duration<double>(current_steady_time - last_control_tick_time_).count();
+    if (tick_gap_sec >= 0.1)
+    {
+      RCLCPP_WARN(this->get_logger(), "CMD_LOOP_GAP interval=%.3fs target=%.4fs", tick_gap_sec, 1.0 / params::RATE_HZ);
+    }
+    last_control_tick_time_ = current_steady_time;
 
     const double elapsed_sec = std::chrono::duration<double>(current_steady_time - node_start_time_).count();
 
@@ -435,12 +511,14 @@ private:
   rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_subscription_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
+  rclcpp::TimerBase::SharedPtr diagnostic_timer_;
 
   std::chrono::steady_clock::time_point node_start_time_;
   std::chrono::steady_clock::time_point last_controller_mode_time_;
   std::chrono::steady_clock::time_point last_local_position_time_;
   std::chrono::steady_clock::time_point last_vehicle_attitude_time_;
   std::chrono::steady_clock::time_point last_vehicle_status_time_;
+  std::chrono::steady_clock::time_point last_control_tick_time_;
 
   px4_msgs::msg::HummingbirdStatus controller_mode_{};
   px4_msgs::msg::VehicleLocalPosition local_position_{};
@@ -459,6 +537,10 @@ private:
   bool has_local_position_{false};
   bool has_vehicle_attitude_{false};
   bool has_vehicle_status_{false};
+  bool controller_mode_missing_{false};
+  bool local_position_missing_{false};
+  bool vehicle_attitude_missing_{false};
+  bool vehicle_status_missing_{false};
 
   bool previous_dds_control_enabled_{false};
   ControlMode control_mode_{ControlMode::wait_offboard};

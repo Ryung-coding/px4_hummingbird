@@ -49,6 +49,7 @@ public:
     pub_mocap_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(pub_mocap_topic, rclcpp::SensorDataQoS().keep_last(qos_depth));
     pub_px4_ = this->create_publisher<px4_msgs::msg::VehicleOdometry>(pub_px4_topic, rclcpp::QoS(qos_depth));
     output_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / output_rate_hz), std::bind(&MocapToPx4::publishPx4, this));
+    node_start_steady_ = std::chrono::steady_clock::now();
 
     RCLCPP_INFO(this->get_logger(), "Subscribed: %s", sub_mocap_topic.c_str());
     RCLCPP_INFO(this->get_logger(), "Publishing : %s", pub_mocap_topic.c_str());
@@ -64,6 +65,28 @@ private:
   {
     if (!target_body_name_.empty() && msg->header.frame_id != target_body_name_) { return; }
 
+    const auto receive_steady = std::chrono::steady_clock::now();
+    if (has_input_)
+    {
+      const double gap_sec = std::chrono::duration<double>(receive_steady - last_input_steady_).count();
+      if (gap_sec >= 0.05)
+      {
+        RCLCPP_WARN(this->get_logger(), "OPTI_INPUT_GAP host=%.3fs", gap_sec);
+      }
+      if (input_missing_)
+      {
+        RCLCPP_INFO(this->get_logger(), "OPTI_INPUT_RECOVERED gap=%.3fs", gap_sec);
+        input_missing_ = false;
+      }
+    }
+    else
+    {
+      RCLCPP_INFO(this->get_logger(), "OPTI_INPUT_FIRST_SAMPLE");
+      input_missing_ = false;
+    }
+    has_input_ = true;
+    last_input_steady_ = receive_steady;
+
     const rclcpp::Time now = this->get_clock()->now();
     const rclcpp::Time sample_time(msg->header.stamp, now.get_clock_type());
     const bool valid_sample_time = sample_time.nanoseconds() > 0 && sample_time <= now;
@@ -72,6 +95,12 @@ private:
     const Eigen::Vector3d opti_pos = position_scale_ * Eigen::Vector3d(
       msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
     const Eigen::Vector4d opti_att(msg->pose.orientation.w, msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z);
+
+    if (!opti_pos.allFinite() || !opti_att.allFinite() || opti_att.norm() < 1.0e-6)
+    {
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "OPTI_INVALID_POSE nonfinite position/orientation or zero quaternion");
+      return;
+    }
 
     geometry_msgs::msg::PoseStamped opti_msg = *msg;
     opti_msg.pose.position.x = opti_pos.x();
@@ -102,6 +131,18 @@ private:
 
   void publishPx4()
   {
+    if (std::chrono::duration<double>(std::chrono::steady_clock::now() -
+        (has_input_ ? last_input_steady_ : node_start_steady_)).count() >= 0.2)
+    {
+      if (!input_missing_)
+      {
+        const double age_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+          (has_input_ ? last_input_steady_ : node_start_steady_)).count();
+        RCLCPP_ERROR(this->get_logger(), "OPTI_INPUT_TIMEOUT received=%d age=%.3fs; visual odometry cannot be refreshed",
+          has_input_, age_sec);
+        input_missing_ = true;
+      }
+    }
     if (!pending_odom_) return;
 
     const rclcpp::Time now = this->get_clock()->now();
@@ -115,7 +156,7 @@ private:
     }
     else
     {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Discarding stale Opti pose (age %.3f s)", sample_age_sec);
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "OPTI_SAMPLE_STALE age=%.3fs; visual odometry not published", sample_age_sec);
     }
 
     pending_odom_.reset();
@@ -127,6 +168,10 @@ private:
   rclcpp::TimerBase::SharedPtr output_timer_;
   std::optional<px4_msgs::msg::VehicleOdometry> pending_odom_;
   double max_sample_age_sec_{0.1};
+  std::chrono::steady_clock::time_point node_start_steady_{};
+  std::chrono::steady_clock::time_point last_input_steady_{};
+  bool has_input_{false};
+  bool input_missing_{false};
 
   float position_variance_{0.0F};
   float orientation_variance_{0.0F};
