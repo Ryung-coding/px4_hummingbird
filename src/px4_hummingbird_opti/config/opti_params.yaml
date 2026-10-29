@@ -19,6 +19,8 @@ mocap_to_px4:
   orientation_stddev_deg: 3.0
   quality: 100
   qos_depth: 10
+  output_rate_hz: 100.0
+  max_sample_age_sec: 0.1
 
 viewer:
   opti_topic: "/opti_raw"
