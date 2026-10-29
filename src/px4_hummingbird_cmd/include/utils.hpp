@@ -198,7 +198,7 @@ inline TargetCMD RC2DDS_handoff(const TargetCMD& initial_pose, HandoffFilters& f
 // Path utils =========================================================
 inline TargetCMD posPath(double t)
 {
-  static constexpr bool TWO_POINT = true;
+  static constexpr bool TWO_POINT = false;
 
   static constexpr double SEG_SEC = 2.0;
   static constexpr double HOLD_SEC = 3.0;
@@ -272,9 +272,9 @@ inline TargetCMD attPath(double t)
 
 inline TargetCMD stepAttPath(double t)
 {
-  static constexpr double ZERO_HOLD_SEC = 2.0;
+  static constexpr double ZERO_HOLD_SEC = 1.0;
   static constexpr double RAMP_SEC = 3.0;
-  static constexpr double HOLD_SEC = 5.0;
+  static constexpr double HOLD_SEC = 3.0;
 
   static constexpr double SWITCH_DEG = 60.0;
   static constexpr double FIRST_STEP_DEG = 5.0;
@@ -348,8 +348,8 @@ inline TargetCMD stepAttPath(double t)
 inline TargetCMD circle_demo(double t)
 {
   static constexpr double HOVER_SEC = 3.0;
-  static constexpr double PERIOD = 30.0;
-  static constexpr double RADIUS = 0.5;
+  static constexpr double PERIOD = 20.0;
+  static constexpr double RADIUS = 0.7;
   static constexpr double PITCH_AMP = 0.0 * M_PI / 180.0;
 
   TargetCMD cmd;
@@ -379,9 +379,9 @@ inline TargetCMD circle_demo(double t)
 
 inline TargetCMD demo_straight(double t)
 {
-  static constexpr double MOVE_SEC = 3.0;
+  static constexpr double MOVE_SEC = 2.0;
   static constexpr double HOLD_SEC = 3.0;
-  static constexpr double DIST = 2.0;
+  static constexpr double DIST = 1.0;
   static constexpr double PERIOD = 2.0 * (MOVE_SEC + HOLD_SEC);
 
   TargetCMD cmd;
