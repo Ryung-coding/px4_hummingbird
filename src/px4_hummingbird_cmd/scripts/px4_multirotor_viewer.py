@@ -16,6 +16,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from px4_msgs.msg import ActuatorMotors, ActuatorServos, HummingbirdStatus, ManualControlSetpoint
 from px4_msgs.msg import VehicleAttitude, VehicleAttitudeSetpoint
+from px4_msgs.msg import VehicleAngularVelocity, VehicleRatesSetpoint
 from px4_msgs.msg import VehicleLocalPosition, VehicleLocalPositionSetpoint, VehicleStatus
 from px4_msgs.msg import VehicleThrustSetpoint, VehicleTorqueSetpoint
 
@@ -577,6 +578,10 @@ class Px4ViewerNode(Node):
 
         self.buf_pos = Ring(MAX_SAMPLES, 4)
         self.buf_pos_sp = Ring(MAX_SAMPLES, 4)
+        self.buf_vel = Ring(MAX_SAMPLES, 4)
+        self.buf_vel_sp = Ring(MAX_SAMPLES, 4)
+        self.buf_rates = Ring(MAX_SAMPLES, 4)
+        self.buf_rates_sp = Ring(MAX_SAMPLES, 4)
         self.buf_rpy = Ring(MAX_SAMPLES, 4)
         self.buf_att_sp = Ring(MAX_SAMPLES, 4)
         self.buf_force = Ring(MAX_SAMPLES, 4)
@@ -608,6 +613,8 @@ class Px4ViewerNode(Node):
         else:
             self._subscribe(VehicleLocalPosition, "/fmu/out/vehicle_local_position", self._cb_pos, qos)
             self._subscribe(VehicleLocalPositionSetpoint, "/fmu/out/vehicle_local_position_setpoint", self._cb_pos_sp, qos)
+            self._subscribe(VehicleAngularVelocity, "/fmu/out/vehicle_angular_velocity", self._cb_angular_velocity, qos)
+            self._subscribe(VehicleRatesSetpoint, "/fmu/out/vehicle_rates_setpoint", self._cb_rates_sp, qos)
             self._subscribe(VehicleAttitude, "/fmu/out/vehicle_attitude", self._cb_att, qos)
             self._subscribe(VehicleAttitudeSetpoint, "/fmu/out/vehicle_attitude_setpoint", self._cb_att_sp, qos)
             self._subscribe(VehicleThrustSetpoint, "/fmu/out/vehicle_thrust_setpoint", self._cb_thrust, qos)
@@ -663,6 +670,7 @@ class Px4ViewerNode(Node):
     def _cb_pos(self, msg):
         t = self._t()
         pos = np.array([msg.x, msg.y, msg.z], dtype=np.float64)
+        vel = np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64)
         self.logger.write("/fmu/out/vehicle_local_position", {
             "timestamp": int(msg.timestamp),
             "timestamp_sample": int(msg.timestamp_sample),
@@ -675,6 +683,7 @@ class Px4ViewerNode(Node):
         with self.lock:
             self._mark_rx_unlocked("vehicle_local_position", t)
             self.buf_pos.push([t, pos[0], pos[1], pos[2]])
+            self.buf_vel.push([t, vel[0], vel[1], vel[2]])
             use_fallback = self.real_mode and (self.last_fmu_odom_rx is None or (t - self.last_fmu_odom_rx) > 1.0)
 
         if use_fallback:
@@ -684,14 +693,17 @@ class Px4ViewerNode(Node):
     def _cb_pos_sp(self, msg):
         t = self._t()
         self.last_pos_sp = np.array([msg.x, msg.y, msg.z], dtype=np.float64)
+        vel_sp = np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64)
         self.logger.write("/fmu/out/vehicle_local_position_setpoint", {
             "timestamp": int(msg.timestamp),
             "position": json_list(self.last_pos_sp),
+            "velocity": json_list(vel_sp),
             "yaw": json_float(getattr(msg, "yaw", math.nan)),
         })
         with self.lock:
             self._mark_rx_unlocked("vehicle_local_position_setpoint", t)
             self.buf_pos_sp.push([t, self.last_pos_sp[0], self.last_pos_sp[1], self.last_pos_sp[2]])
+            self.buf_vel_sp.push([t, vel_sp[0], vel_sp[1], vel_sp[2]])
 
     def _cb_att(self, msg):
         t = self._t()
@@ -718,6 +730,31 @@ class Px4ViewerNode(Node):
         with self.lock:
             self._mark_rx_unlocked("vehicle_attitude_setpoint", t)
             self.buf_att_sp.push([t, self.last_att_sp_deg[0], self.last_att_sp_deg[1], self.last_att_sp_deg[2]])
+
+    def _cb_angular_velocity(self, msg):
+        t = self._t()
+        rates = np.array(msg.xyz, dtype=np.float64)
+        self.logger.write("/fmu/out/vehicle_angular_velocity", {
+            "timestamp": int(msg.timestamp),
+            "timestamp_sample": int(msg.timestamp_sample),
+            "xyz": json_list(msg.xyz, 3),
+            "xyz_derivative": json_list(msg.xyz_derivative, 3),
+        })
+        with self.lock:
+            self._mark_rx_unlocked("vehicle_angular_velocity", t)
+            self.buf_rates.push([t, rates[0], rates[1], rates[2]])
+
+    def _cb_rates_sp(self, msg):
+        t = self._t()
+        rates_sp = np.array([msg.roll, msg.pitch, msg.yaw], dtype=np.float64)
+        self.logger.write("/fmu/out/vehicle_rates_setpoint", {
+            "timestamp": int(msg.timestamp),
+            "xyz": json_list(rates_sp, 3),
+            "thrust_body": json_list(msg.thrust_body, 3),
+        })
+        with self.lock:
+            self._mark_rx_unlocked("vehicle_rates_setpoint", t)
+            self.buf_rates_sp.push([t, rates_sp[0], rates_sp[1], rates_sp[2]])
 
     def _cb_thrust(self, msg):
         t = self._t()
@@ -1035,6 +1072,10 @@ class Px4ViewerNode(Node):
         self.last_opti_health_sample_t = -math.inf
         self.buf_pos = Ring(MAX_SAMPLES, 4)
         self.buf_pos_sp = Ring(MAX_SAMPLES, 4)
+        self.buf_vel = Ring(MAX_SAMPLES, 4)
+        self.buf_vel_sp = Ring(MAX_SAMPLES, 4)
+        self.buf_rates = Ring(MAX_SAMPLES, 4)
+        self.buf_rates_sp = Ring(MAX_SAMPLES, 4)
         self.buf_rpy = Ring(MAX_SAMPLES, 4)
         self.buf_att_sp = Ring(MAX_SAMPLES, 4)
         self.buf_force = Ring(MAX_SAMPLES, 4)
@@ -1067,6 +1108,8 @@ class Px4ViewerNode(Node):
             with self.lock:
                 self._mark_rx_unlocked("vehicle_local_position", t)
                 self.buf_pos.push([t, pos[0], pos[1], pos[2]])
+                if "velocity" in data:
+                    self.buf_vel.push([t, *data["velocity"][:3]])
             if self.real_mode:
                 heading = json_float(data.get("heading"))
                 quat = yaw_to_quat(heading) if heading is not None else np.array([1.0, 0.0, 0.0, 0.0])
@@ -1079,6 +1122,22 @@ class Px4ViewerNode(Node):
                 self._mark_rx_unlocked("vehicle_local_position_setpoint", t)
                 self.last_pos_sp = pos_sp
                 self.buf_pos_sp.push([t, pos_sp[0], pos_sp[1], pos_sp[2]])
+                if "velocity" in data:
+                    self.buf_vel_sp.push([t, *data["velocity"][:3]])
+            return
+
+        if topic == "/fmu/out/vehicle_angular_velocity":
+            rates = np.asarray(data["xyz"], dtype=np.float64)
+            with self.lock:
+                self._mark_rx_unlocked("vehicle_angular_velocity", t)
+                self.buf_rates.push([t, rates[0], rates[1], rates[2]])
+            return
+
+        if topic == "/fmu/out/vehicle_rates_setpoint":
+            rates_sp = np.asarray(data["xyz"], dtype=np.float64)
+            with self.lock:
+                self._mark_rx_unlocked("vehicle_rates_setpoint", t)
+                self.buf_rates_sp.push([t, rates_sp[0], rates_sp[1], rates_sp[2]])
             return
 
         if topic == "/fmu/out/vehicle_attitude":
@@ -1299,6 +1358,7 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         self.cv = {}
         self.state_plots = []
+        self.velocity_plots = []
         self.act_plots = []
         self.real_plots = []
         self.real_time_plots = []
@@ -1326,10 +1386,13 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.real_3d_last_draw_t = 0.0
 
         self.state_glw = pg.GraphicsLayoutWidget()
+        self.velocity_glw = pg.GraphicsLayoutWidget()
         self.act_glw = pg.GraphicsLayoutWidget()
         tabs.addTab(self.state_glw, "State")
+        tabs.addTab(self.velocity_glw, "Velocity")
         tabs.addTab(self.act_glw, "Actuator")
         self._build_state_tab()
+        self._build_velocity_tab()
         self._build_act_tab()
 
         if node.real_mode:
@@ -1510,6 +1573,25 @@ class ViewerWindow(QtWidgets.QMainWindow):
             p.setXLink(self.state_plots[0])
 
         for p in self.state_plots:
+            p.showAxis("bottom")
+            p.setLabel("bottom", "time [s]")
+
+    def _build_velocity_tab(self):
+        groups = (
+            (0, ("Vx", "Vy", "Vz"), "vel", "m/s"),
+            (1, ("p", "q", "r"), "rates", "rad/s"),
+        )
+        for row, labels, key, unit in groups:
+            for i, label in enumerate(labels):
+                p = _mkplot(self.velocity_glw, row, i, f"{label} / des", f"{label} [{unit}]")
+                self.cv[f"{key}{i}"] = p.plot(pen=_pen(C3[i]), name="state")
+                self.cv[f"{key}_sp{i}"] = _front(p.plot(pen=_cmd_pen(), name="des"))
+                self.velocity_plots.append(p)
+
+        for p in self.velocity_plots[1:]:
+            p.setXLink(self.velocity_plots[0])
+
+        for p in self.velocity_plots:
             p.showAxis("bottom")
             p.setLabel("bottom", "time [s]")
 
@@ -1731,7 +1813,7 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         if signature != self._state_background_signature:
             self._clear_state_backgrounds()
-            plots = self.state_plots + self.act_plots + self.real_time_plots
+            plots = self.state_plots + self.velocity_plots + self.act_plots + self.real_time_plots
             for plot in plots:
                 for start, end, state in cmd_segments:
                     self._add_state_band(plot, start, end, "cmd", state)
@@ -1820,6 +1902,10 @@ class ViewerWindow(QtWidgets.QMainWindow):
             data = {
                 "pos": nd.buf_pos.get(),
                 "pos_sp": nd.buf_pos_sp.get(),
+                "vel": nd.buf_vel.get(),
+                "vel_sp": nd.buf_vel_sp.get(),
+                "rates": nd.buf_rates.get(),
+                "rates_sp": nd.buf_rates_sp.get(),
                 "rpy": nd.buf_rpy.get(),
                 "att_sp": nd.buf_att_sp.get(),
                 "force": nd.buf_force.get(),
@@ -1881,6 +1967,14 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self._set3(data["force"], f"force{i}", i)
             self._set3(data["torque"], f"torque{i}", i)
 
+        for key in ("vel", "vel_sp", "rates", "rates_sp"):
+            for i in range(3):
+                name = f"{key}{i}"
+                if data[key].shape[0]:
+                    self._set3(data[key], name, i)
+                else:
+                    self.cv[name].setData([], [])
+
         for i in range(4):
             self._set4(data["motor"], f"motor_all{i}", i)
             self._set4(data["alpha"], f"alpha{i}", i)
@@ -1893,6 +1987,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         if self.state_plots:
             self.state_plots[0].setXRange(tl, tn, padding=0)
+        if self.velocity_plots:
+            self.velocity_plots[0].setXRange(tl, tn, padding=0)
         if self.act_plots:
             self.act_plots[0].setXRange(tl, tn, padding=0)
         if self.real_time_plots:

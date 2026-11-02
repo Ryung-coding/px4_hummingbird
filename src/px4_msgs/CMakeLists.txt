@@ -9,6 +9,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/ActuatorServos.msg
   msg/VehicleAttitude.msg
   msg/VehicleAttitudeSetpoint.msg
+  msg/VehicleAngularVelocity.msg
+  msg/VehicleRatesSetpoint.msg
   msg/HummingbirdStatus.msg
   msg/VehicleLocalPosition.msg
   msg/VehicleLocalPositionSetpoint.msg
