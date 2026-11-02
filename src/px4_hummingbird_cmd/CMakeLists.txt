@@ -78,6 +78,7 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/px4_multirotor_viewer.py
+  scripts/headless_logger.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

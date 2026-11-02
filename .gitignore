@@ -20,3 +20,4 @@ view_log/
 rosbag2_*/
 *.db3
 *.mcap
+.vscode/
