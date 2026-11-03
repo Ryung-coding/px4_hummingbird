@@ -440,6 +440,8 @@ void MulticopterPositionControl::Run()
 				}
 			}
 		}
+		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
+		_vehicle_status_sub.update(&_vehicle_status);
 
 		if (_gain_profile_switched) {
 			// The integral is already in acceleration units; retain it in flight to avoid a thrust step.
@@ -473,6 +475,16 @@ void MulticopterPositionControl::Run()
 		const bool hummingbird_fully_actuated_control_enabled = hummingbird_airframe && _param_hb_ctrl_mode.get() == 1;
 		const bool hummingbird_dds_command_enabled = hummingbird_airframe && _param_hb_cmd_source.get() == 1;
 		const bool hummingbird_attitude_command_enabled = hummingbird_fully_actuated_control_enabled && hummingbird_dds_command_enabled;
+		const bool hb_pos_aux_mode = hummingbird_fully_actuated_control_enabled
+					     && _vehicle_control_mode.flag_multicopter_position_control_enabled
+					     && _vehicle_control_mode.flag_control_manual_enabled
+					     && _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL;
+
+		if (!hb_pos_aux_mode) {
+			_hb_pos_aux_active = false;
+			_hb_pos_aux_roll_filter.reset(0.f);
+			_hb_pos_aux_pitch_filter.reset(0.f);
+		}
 
 		if (hummingbird_airframe && hrt_elapsed_time(&_last_hummingbird_status_pub) >= 100_ms) {
 			hummingbird_status_s status{};
@@ -725,6 +737,37 @@ void MulticopterPositionControl::Run()
 				const Quatf *attitude_sp = (hrt_absolute_time() < _hummingbird_attitude_setpoint_time + 200_ms)
 							   ? &_hummingbird_attitude_setpoint : nullptr;
 				_control.getHummingBirdAttitudeSetpoint(attitude_setpoint, Quatf(vehicle_attitude.q), attitude_sp);
+
+				if (hb_pos_aux_mode && attitude_sp == nullptr) {
+					const bool entering = !_hb_pos_aux_active;
+
+					if (entering) {
+						_hb_pos_aux_roll_filter.reset(0.f);
+						_hb_pos_aux_pitch_filter.reset(0.f);
+					}
+
+					_hb_pos_aux_active = true;
+					const bool aux_valid = _manual_control_setpoint.valid
+							       && hrt_elapsed_time(&_manual_control_setpoint.timestamp) < 500_ms;
+					const float aux1 = aux_valid && PX4_ISFINITE(_manual_control_setpoint.aux1)
+							   ? math::constrain(_manual_control_setpoint.aux1, -1.f, 1.f) : 0.f;
+					const float aux2 = aux_valid && PX4_ISFINITE(_manual_control_setpoint.aux2)
+							   ? math::constrain(_manual_control_setpoint.aux2, -1.f, 1.f) : 0.f;
+					const float aux_tau = math::constrain(_param_hb_pos_aux_tau.get(), 0.f, 1.f);
+					_hb_pos_aux_roll_filter.setParameters(dt, aux_tau);
+					_hb_pos_aux_pitch_filter.setParameters(dt, aux_tau);
+					const float roll_input = entering ? 0.f : _hb_pos_aux_roll_filter.update(aux1);
+					const float pitch_input = entering ? 0.f : _hb_pos_aux_pitch_filter.update(aux2);
+					const float roll_sp = math::radians(math::constrain(_param_hb_pos_r_max.get(), 0.f, 45.f)) * roll_input;
+					const float pitch_sp = math::radians(math::constrain(_param_hb_pos_p_max.get(), 0.f, 45.f)) * pitch_input;
+					const float yaw_sp = Eulerf(Quatf(attitude_setpoint.q_d)).psi();
+					Quatf(Eulerf(roll_sp, pitch_sp, yaw_sp)).copyTo(attitude_setpoint.q_d);
+
+				} else if (_hb_pos_aux_active) {
+					_hb_pos_aux_active = false;
+					_hb_pos_aux_roll_filter.reset(0.f);
+					_hb_pos_aux_pitch_filter.reset(0.f);
+				}
 
 			} else {
 				_control.getAttitudeSetpoint(attitude_setpoint);

@@ -129,3 +129,42 @@ PARAM_DEFINE_FLOAT(MPC_ACC_HOR_MAX, 5.f);
  * @group Multicopter Position Control
  */
 PARAM_DEFINE_FLOAT(MPC_JERK_MAX, 8.f);
+
+/**
+ * HummingBird Position AUX1 roll angle limit
+ *
+ * Applied only in fully-actuated manual Position mode. AUX1 center is zero roll.
+ *
+ * @unit deg
+ * @min 0.0
+ * @max 45.0
+ * @decimal 1
+ * @group Multicopter Position Control
+ */
+PARAM_DEFINE_FLOAT(HB_POS_R_MAX, 10.0f);
+
+/**
+ * HummingBird Position AUX2 pitch angle limit
+ *
+ * Applied only in fully-actuated manual Position mode. AUX2 center is zero pitch.
+ *
+ * @unit deg
+ * @min 0.0
+ * @max 45.0
+ * @decimal 1
+ * @group Multicopter Position Control
+ */
+PARAM_DEFINE_FLOAT(HB_POS_P_MAX, 30.0f);
+
+/**
+ * HummingBird Position AUX attitude input filter time constant
+ *
+ * The filter starts at zero on entry to Position mode. Set to zero to disable smoothing.
+ *
+ * @unit s
+ * @min 0.0
+ * @max 1.0
+ * @decimal 2
+ * @group Multicopter Position Control
+ */
+PARAM_DEFINE_FLOAT(HB_POS_AUX_TAU, 0.5f);

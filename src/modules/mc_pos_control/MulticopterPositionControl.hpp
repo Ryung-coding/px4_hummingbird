@@ -58,6 +58,7 @@
 #include <uORB/Publication.hpp>
 #include <uORB/Subscription.hpp>
 #include <uORB/SubscriptionCallback.hpp>
+#include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/hover_thrust_estimate.h>
 #include <uORB/topics/hummingbird_status.h>
 #include <uORB/topics/parameter_update.h>
@@ -70,6 +71,7 @@
 #include <uORB/topics/vehicle_land_detected.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
+#include <uORB/topics/vehicle_status.h>
 
 using namespace time_literals;
 
@@ -109,12 +111,14 @@ private:
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 100_ms};
 
 	uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
+	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::Subscription _trajectory_setpoint6dof_sub{ORB_ID(trajectory_setpoint6dof)};
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _vehicle_constraints_sub{ORB_ID(vehicle_constraints)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
+	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 
 	hrt_abstime _time_stamp_last_loop{0};		/**< time stamp of last loop iteration */
 	hrt_abstime _time_position_control_enabled{0};
@@ -122,6 +126,11 @@ private:
 	trajectory_setpoint_s _setpoint{PositionControl::empty_trajectory_setpoint};
 	trajectory_setpoint_s _last_valid_setpoint{PositionControl::empty_trajectory_setpoint};
 	vehicle_control_mode_s _vehicle_control_mode{};
+	manual_control_setpoint_s _manual_control_setpoint{};
+	vehicle_status_s _vehicle_status{};
+	AlphaFilter<float> _hb_pos_aux_roll_filter;
+	AlphaFilter<float> _hb_pos_aux_pitch_filter;
+	bool _hb_pos_aux_active{false};
 	matrix::Quatf _hummingbird_attitude_setpoint{1.f, 0.f, 0.f, 0.f};
 	hrt_abstime _hummingbird_attitude_setpoint_time{0};
 
@@ -201,7 +210,10 @@ private:
 		(ParamFloat<px4::params::MPC_YAWRAUTO_ACC>) _param_mpc_yawrauto_acc,
 		(ParamInt<px4::params::CA_AIRFRAME>) _param_ca_airframe,
 		(ParamInt<px4::params::HB_CTRL_MODE>) _param_hb_ctrl_mode,
-		(ParamInt<px4::params::HB_CMD_SOURCE>) _param_hb_cmd_source
+		(ParamInt<px4::params::HB_CMD_SOURCE>) _param_hb_cmd_source,
+		(ParamFloat<px4::params::HB_POS_R_MAX>) _param_hb_pos_r_max,
+		(ParamFloat<px4::params::HB_POS_P_MAX>) _param_hb_pos_p_max,
+		(ParamFloat<px4::params::HB_POS_AUX_TAU>) _param_hb_pos_aux_tau
 	);
 
 	math::WelfordMean<float> _sample_interval_s{};
