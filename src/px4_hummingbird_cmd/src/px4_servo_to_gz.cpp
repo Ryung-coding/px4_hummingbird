@@ -24,6 +24,10 @@ public:
   Px4ServoToGz()
   : Node("px4_servo_to_gz")
   {
+    wobble_deg_ = std::clamp(this->declare_parameter<double>("servo_wobble_deg", params::SERVO_WOBBLE_DEG), 0.0, params::SERVO_WOBBLE_MAX_DEG);
+    wobble_hz_ = std::max(this->declare_parameter<double>("servo_wobble_hz", params::SERVO_WOBBLE_HZ), 0.0);
+    wobble_start_time_ = this->now();
+
     for (std::size_t i = 0; i < params::SERVO_TOPICS.size(); ++i)
     {
       const std::string topic = "/model/hummingbird_0/" + std::string(params::SERVO_TOPICS[i]);
@@ -75,7 +79,7 @@ public:
       }
     });
 
-    RCLCPP_INFO(this->get_logger(), "PX4 actuator_servos -> Gazebo bridge started: model=hummingbird_0, rate=%d Hz, return=%.2f sec", params::RATE_HZ, params::SERVO_RETURN_TIME_SEC);
+    RCLCPP_INFO(this->get_logger(), "PX4 actuator_servos -> Gazebo bridge started: model=hummingbird_0, rate=%d Hz, return=%.2f sec, wobble=%.1f deg at %.1f Hz", params::RATE_HZ, params::SERVO_RETURN_TIME_SEC, wobble_deg_, wobble_hz_);
   }
 
   ~Px4ServoToGz() override
@@ -104,12 +108,14 @@ private:
   {
     last_actuator_msg_time_ = this->now();
     returning_to_zero_ = false;
+    const double wobble_phase = wobble_deg_ > 0.0 ? 2.0 * M_PI * wobble_hz_ * (last_actuator_msg_time_ - wobble_start_time_).seconds() : 0.0;
 
     for (std::size_t i = 0; i < params::SERVO_TOPICS.size(); ++i)
     {
       const std::size_t control_index = params::SERVO_CONTROL_INDEX[i];
       const double normalized = std::isfinite(msg->control[control_index]) ? std::clamp(static_cast<double>(msg->control[control_index]), -1.0, 1.0) : 0.0;
-      const double command = normalized * params::SERVO_LIMIT_RAD[i];
+      double command = normalized * params::SERVO_LIMIT_RAD[i];
+      if (wobble_deg_ > 0.0) command = std::clamp(command + wobble_deg_ * M_PI / 180.0 * std::sin(wobble_phase + params::SERVO_WOBBLE_PHASE_RAD[control_index]), -params::SERVO_LIMIT_RAD[i], params::SERVO_LIMIT_RAD[i]);
 
       servo_lpf_[i].reset(command);
 
@@ -122,6 +128,10 @@ private:
   }
 
   gz::transport::Node gz_node_;
+  rclcpp::Time wobble_start_time_;
+
+  double wobble_deg_{params::SERVO_WOBBLE_DEG};
+  double wobble_hz_{params::SERVO_WOBBLE_HZ};
 
   std::array<gz::transport::Node::Publisher, params::SERVO_TOPICS.size()> servo_pubs_;
   std::array<utils::LPF, params::SERVO_TOPICS.size()> servo_lpf_;

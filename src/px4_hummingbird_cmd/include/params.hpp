@@ -55,6 +55,12 @@ static constexpr double SERVO_STARTUP_RETURN_TIME_SEC = 2.0;
 static constexpr int SERVO_PERIOD_US = static_cast<int>(1000000.0 / RATE_HZ); // not tunable
 
 // Sim
+// Commanded wobble; Gazebo joints attenuate high-frequency motion.
+static constexpr double SERVO_WOBBLE_DEG = 0.0;
+static constexpr double SERVO_WOBBLE_HZ = 13.0;
+static constexpr double SERVO_WOBBLE_MAX_DEG = 6.0;
+static constexpr std::array<double, 6> SERVO_WOBBLE_PHASE_RAD{0.0, M_PI / 2.0, 0.0, M_PI / 2.0, M_PI, 3.0 * M_PI / 2.0};
+
 // ActuatorServos control[0~1] = beta_1~beta_2
 // ActuatorServos control[2~5] = alpha_1~alpha_4
 // Gazebo keeps four beta joints: beta_1 drives front pair 1/4, beta_2 drives rear pair 2/3.
