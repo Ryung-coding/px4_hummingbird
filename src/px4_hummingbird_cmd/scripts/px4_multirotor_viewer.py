@@ -40,6 +40,7 @@ MAX_SAMPLES = 20000
 UPDATE_MS = 50
 RAD2DEG = 180.0 / math.pi
 R_DOWN = np.diag([1.0, -1.0, -1.0])
+SITL_MAX_ROTOR_THRUST_N = 1961.04 * 9.80665e-3
 # PX4 publishes NED/FRD vectors. Display them in a right-handed, z-up NWU
 # frame so axis directions and positive roll/pitch/yaw rotations agree.
 NED_TO_DISPLAY = np.diag([1.0, -1.0, -1.0])
@@ -781,7 +782,8 @@ class Px4ViewerNode(Node):
     def _cb_motors(self, msg):
         t = self._t()
         controls = finite4(msg.control)
-        force = np.square(np.clip(controls, 0.0, 1.0)) * self.max_rotor_thrust
+        clipped = np.clip(controls, 0.0, 1.0)
+        force = clipped * SITL_MAX_ROTOR_THRUST_N if self.viewer_mode == "sim" else np.square(clipped) * self.max_rotor_thrust
         self.logger.write("/fmu/out/actuator_motors", {
             "timestamp": int(msg.timestamp),
             "timestamp_sample": int(msg.timestamp_sample),
@@ -1175,7 +1177,9 @@ class Px4ViewerNode(Node):
 
         if topic == "/fmu/out/actuator_motors":
             controls = vec_from_log(data, "control", 4)
-            force = vec_from_log(data, "force_n_est", 4) if "force_n_est" in data else np.square(np.clip(controls, 0.0, 1.0)) * self.max_rotor_thrust
+            clipped = np.clip(controls, 0.0, 1.0)
+            fallback_force = clipped * SITL_MAX_ROTOR_THRUST_N if self.viewer_mode == "sim" else np.square(clipped) * self.max_rotor_thrust
+            force = vec_from_log(data, "force_n_est", 4) if "force_n_est" in data else fallback_force
             with self.lock:
                 self._mark_rx_unlocked("actuator_motors", t)
                 self.last_motor_controls = controls
