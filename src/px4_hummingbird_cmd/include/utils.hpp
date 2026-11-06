@@ -50,6 +50,8 @@ struct TargetCMD {
   double x = 0.0;
   double y = 0.0;
   double z = 0.0;
+  double vx = 0.0;
+  double vy = 0.0;
   double roll = 0.0;
   double pitch = 0.0;
   double yaw = 0.0;
@@ -195,6 +197,9 @@ inline TargetCMD posPath(double t)
   {
     const double a = local_t / SEG_SEC;
     s = a * a * (3.0 - 2.0 * a);
+    const double ds_dt = 6.0 * a * (1.0 - a) / SEG_SEC;
+    cmd.vx = (p1(0) - p0(0)) * ds_dt;
+    cmd.vy = (p1(1) - p0(1)) * ds_dt;
   }
 
   cmd.x = p0(0) + (p1(0) - p0(0)) * s;
@@ -337,9 +342,9 @@ inline TargetCMD circle_demo(double t)
 
 inline TargetCMD demo_straight(double t)
 {
-  static constexpr double MOVE_SEC = 3.0;
-  static constexpr double HOLD_SEC = 3.0;
-  static constexpr double DIST = 2.0;
+  static constexpr double MOVE_SEC = 1.0;
+  static constexpr double HOLD_SEC = 5.0;
+  static constexpr double DIST = 1.0;
   static constexpr double PERIOD = 2.0 * (MOVE_SEC + HOLD_SEC);
 
   TargetCMD cmd;
@@ -360,6 +365,7 @@ inline TargetCMD demo_straight(double t)
     const double a = (tm - HOLD_SEC) / MOVE_SEC;
     const double s = a * a * (3.0 - 2.0 * a);
     cmd.y = DIST * s;
+    cmd.vy = DIST * 6.0 * a * (1.0 - a) / MOVE_SEC;
   }
   else if (tm < 2.0 * HOLD_SEC + MOVE_SEC) {
     cmd.y = DIST;
@@ -368,6 +374,7 @@ inline TargetCMD demo_straight(double t)
     const double a = (tm - 2.0 * HOLD_SEC - MOVE_SEC) / MOVE_SEC;
     const double s = a * a * (3.0 - 2.0 * a);
     cmd.y = DIST * (1.0 - s);
+    cmd.vy = -DIST * 6.0 * a * (1.0 - a) / MOVE_SEC;
   }
 
   return cmd;

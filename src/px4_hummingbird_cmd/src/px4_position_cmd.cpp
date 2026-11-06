@@ -302,7 +302,8 @@ private:
 
     message.timestamp = timestamp_us;
     message.position = {static_cast<float>(target.x), static_cast<float>(target.y), static_cast<float>(target.z)};
-    message.velocity = {nan, nan, nan};
+    const bool moving_path = trajectory_name_ == "pos" || trajectory_name_ == "demo_straight";
+    message.velocity = {moving_path ? static_cast<float>(target.vx) : nan, moving_path ? static_cast<float>(target.vy) : nan, nan};
     message.acceleration = {nan, nan, nan};
     message.jerk = {nan, nan, nan};
     message.quaternion = {static_cast<float>(quaternion(0)), static_cast<float>(quaternion(1)),static_cast<float>(quaternion(2)),static_cast<float>(quaternion(3))};
