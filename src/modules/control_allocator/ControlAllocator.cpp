@@ -63,7 +63,7 @@ constexpr float kHummingBirdMaxRotorThrust = kHummingBirdMaxRotorThrustGf * kHum
 constexpr float kHummingBirdMaxTotalThrust = 4.0f * kHummingBirdMaxRotorThrust;
 constexpr float kHummingBirdMaxMoment = 4.0f * kHummingBirdMaxRotorThrust * kHummingBirdLx;
 constexpr float kHummingBirdBetaLimitRad = M_PI_F;
-constexpr float kHummingBirdAlphaLimitRad = M_PI_F / 6.0f;
+constexpr float kHummingBirdAlphaLimitRad = M_PI_F / 9.0f;
 
 struct HummingBirdAllocationOutput
 {

@@ -73,14 +73,14 @@ param set-default SIM_GZ_SV_MAXA2 180
 param set-default SIM_GZ_SV_MINA1 -180
 param set-default SIM_GZ_SV_MINA2 -180
 
-param set-default SIM_GZ_SV_MAXA3 30
-param set-default SIM_GZ_SV_MAXA4 30
-param set-default SIM_GZ_SV_MAXA5 30
-param set-default SIM_GZ_SV_MAXA6 30
-param set-default SIM_GZ_SV_MINA3 -30
-param set-default SIM_GZ_SV_MINA4 -30
-param set-default SIM_GZ_SV_MINA5 -30
-param set-default SIM_GZ_SV_MINA6 -30
+param set-default SIM_GZ_SV_MAXA3 20
+param set-default SIM_GZ_SV_MAXA4 20
+param set-default SIM_GZ_SV_MAXA5 20
+param set-default SIM_GZ_SV_MAXA6 20
+param set-default SIM_GZ_SV_MINA3 -20
+param set-default SIM_GZ_SV_MINA4 -20
+param set-default SIM_GZ_SV_MINA5 -20
+param set-default SIM_GZ_SV_MINA6 -20
 
 param set-default SIM_GZ_SV_MAXA7 0
 param set-default SIM_GZ_SV_MAXA8 0
