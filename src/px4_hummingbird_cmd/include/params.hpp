@@ -45,7 +45,7 @@ static constexpr double PITCH_MAX = 60.0 * M_PI / 180.0;
 
 // Common servo parameters -----------------------------------------------
 static constexpr double BETA_LIMIT_RAD = M_PI;
-static constexpr double ALPHA_LIMIT_RAD = M_PI / 6.0;
+static constexpr double ALPHA_LIMIT_RAD = M_PI / 9.0;
 
 static constexpr double DDS_RECEIVE_TIMEOUT_SEC = 0.5;
 static constexpr double SERVO_DIAGNOSTIC_GAP_SEC = 0.05;

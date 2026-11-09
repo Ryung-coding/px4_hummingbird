@@ -497,7 +497,7 @@ class Px4ViewerNode(Node):
         self.real_mode = self.viewer_mode in ("real", "chk")
 
         self.beta_limit_rad = self.declare_parameter("beta_limit_rad", math.pi).value
-        self.alpha_limit_rad = self.declare_parameter("alpha_limit_rad", math.pi / 6.0).value
+        self.alpha_limit_rad = self.declare_parameter("alpha_limit_rad", math.pi / 9.0).value
         self.max_rotor_thrust = self.declare_parameter("max_rotor_thrust", 24.0).value
         self.actuator_timeout_sec = max(0.001, float(self.declare_parameter("actuator_timeout_sec", 0.2).value))
 
