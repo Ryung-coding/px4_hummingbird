@@ -7,7 +7,9 @@
 #include <memory>
 #include <string>
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <px4_msgs/msg/hummingbird_status.hpp>
@@ -44,6 +46,13 @@ public:
     vehicle_attitude_subscription_    = this->create_subscription<px4_msgs::msg::VehicleAttitude>("/fmu/out/vehicle_attitude", qos, std::bind(&Px4PositionCommand::vehicle_attitude_callback, this, std::placeholders::_1));
     vehicle_status_subscription_     = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status", qos, std::bind(&Px4PositionCommand::vehicle_status_callback, this, std::placeholders::_1));
 
+    if (trajectory_name_ == "ext")
+    {
+      ext_timeout_sec_ = std::max(0.1, this->declare_parameter<double>("ext_timeout_sec", 1.0));
+      ext_setpoint_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/avp/setpoint", 10, std::bind(&Px4PositionCommand::ext_setpoint_callback, this, std::placeholders::_1));
+      RCLCPP_INFO(this->get_logger(), "External setpoint mode: /avp/setpoint (map ENU/FLU), timeout=%.2fs", ext_timeout_sec_);
+    }
 
     const auto timer_period = std::chrono::nanoseconds(static_cast<int64_t>(1.0e9 / static_cast<double>(params::RATE_HZ)));
 
@@ -169,6 +178,46 @@ private:
     last_vehicle_status_time_ = std::chrono::steady_clock::now();
   }
 
+  void ext_setpoint_callback(const geometry_msgs::msg::PoseStamped::SharedPtr message)
+  {
+    if (message->header.frame_id != "map")
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Ignoring /avp/setpoint: expected map frame.");
+      return;
+    }
+
+    const Eigen::Vector3d pos_enu(message->pose.position.x, message->pose.position.y, message->pose.position.z);
+    Eigen::Quaterniond q_enu_flu(message->pose.orientation.w, message->pose.orientation.x,
+                                message->pose.orientation.y, message->pose.orientation.z);
+    const double q_norm = q_enu_flu.norm();
+
+    if (!pos_enu.allFinite() || !std::isfinite(q_norm) || q_norm < 1e-6)
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Ignoring invalid /avp/setpoint pose.");
+      return;
+    }
+
+    q_enu_flu.normalize();
+    Eigen::Matrix3d R_ned_enu;
+    R_ned_enu << 0.0, 1.0, 0.0,
+                 1.0, 0.0, 0.0,
+                 0.0, 0.0, -1.0;
+    const Eigen::Matrix3d R_flu_frd = Eigen::Vector3d(1.0, -1.0, -1.0).asDiagonal();
+    const Eigen::Vector3d pos_ned = R_ned_enu * pos_enu;
+    const Eigen::Quaterniond q_ned_frd(R_ned_enu * q_enu_flu.toRotationMatrix() * R_flu_frd);
+    const Eigen::Vector3d rpy = utils::quatToRpy(
+      Eigen::Vector4d(q_ned_frd.w(), q_ned_frd.x(), q_ned_frd.y(), q_ned_frd.z()));
+
+    ext_target_.x = pos_ned.x();
+    ext_target_.y = pos_ned.y();
+    ext_target_.z = pos_ned.z();
+    ext_target_.roll = std::clamp(rpy.x(), -params::ROLL_MAX, params::ROLL_MAX);
+    ext_target_.pitch = std::clamp(rpy.y(), -params::PITCH_MAX, params::PITCH_MAX);
+    ext_target_.yaw = utils::unwrapNear(rpy.z(), last_target_.yaw);
+    has_ext_target_ = true;
+    last_ext_time_ = std::chrono::steady_clock::now();
+  }
+
   void wait_offboard(uint64_t timestamp_us, double elapsed_sec)
   {
     if (elapsed_sec < params::command_delay_sec) return;
@@ -276,20 +325,36 @@ private:
   {
     const double trajectory_time_sec = elapsed_sec - trajectory_start_time_sec_;
 
-    utils::TargetCMD path_target{};
+    utils::TargetCMD target = last_target_;
 
-    if      (trajectory_name_ == "pos")      path_target = utils::posPath(trajectory_time_sec);
-    else if (trajectory_name_ == "att")      path_target = utils::attPath(trajectory_time_sec);
-    else if (trajectory_name_ == "step_att") path_target = utils::stepAttPath(trajectory_time_sec);
-    else if (trajectory_name_ == "circle_demo") path_target = utils::circle_demo(trajectory_time_sec);
-    else if (trajectory_name_ == "demo_straight") path_target = utils::demo_straight(trajectory_time_sec);
-    else RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Unknown path. Holding initial pose.");
+    if (trajectory_name_ == "ext")
+    {
+      const double age_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_ext_time_).count();
 
-    utils::TargetCMD target = path_target;
+      if (has_ext_target_ && age_sec <= ext_timeout_sec_)
+      {
+        target = ext_target_;
 
-    target.x = pos_x + path_target.x;
-    target.y = pos_y + path_target.y;
-    target.z = pos_z + path_target.z;
+      } else {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "External setpoint missing or stale; holding last target.");
+      }
+
+    } else {
+      utils::TargetCMD path_target{};
+
+      if      (trajectory_name_ == "pos")      path_target = utils::posPath(trajectory_time_sec);
+      else if (trajectory_name_ == "att")      path_target = utils::attPath(trajectory_time_sec);
+      else if (trajectory_name_ == "step_att") path_target = utils::stepAttPath(trajectory_time_sec);
+      else if (trajectory_name_ == "circle_demo") path_target = utils::circle_demo(trajectory_time_sec);
+      else if (trajectory_name_ == "demo_straight") path_target = utils::demo_straight(trajectory_time_sec);
+      else RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Unknown path. Holding initial pose.");
+
+      target = path_target;
+      target.x = pos_x + path_target.x;
+      target.y = pos_y + path_target.y;
+      target.z = pos_z + path_target.z;
+    }
 
     last_target_ = target;
 
@@ -512,6 +577,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
   rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_subscription_;
   rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr ext_setpoint_subscription_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr diagnostic_timer_;
@@ -532,6 +598,10 @@ private:
   utils::HandoffFilters rc2dds_handoff_filters_{};
 
   std::string trajectory_name_;
+  utils::TargetCMD ext_target_{};
+  std::chrono::steady_clock::time_point last_ext_time_{};
+  double ext_timeout_sec_{1.0};
+  bool has_ext_target_{false};
 
   bool auto_offboard_{false};
   bool auto_arm_{false};

@@ -8,10 +8,10 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <depend>geometry_msgs</depend>
   <depend>rclcpp</depend>
   <depend>px4_msgs</depend>
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>px4_hummingbird_opti</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
