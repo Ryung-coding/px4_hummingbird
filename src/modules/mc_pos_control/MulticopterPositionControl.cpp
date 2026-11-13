@@ -527,7 +527,7 @@ void MulticopterPositionControl::Run()
 				_setpoint.jerk[i] = hummingbird_setpoint.jerk[i];
 			}
 
-			_setpoint.yaw = 0.f;
+			_setpoint.yaw = NAN;
 			_setpoint.yawspeed = 0.f;
 
 			if (hummingbird_attitude_command_enabled) {
