@@ -28,12 +28,12 @@ static constexpr uint16_t source_component_id = 1;
 static constexpr double handoff_runtime = 8.0;
 
 // Command frame: local NED position, yaw as NED heading.
-static constexpr double initial_pose_x_m =  0.0;
-static constexpr double initial_pose_y_m = -1.0;
-static constexpr double initial_pose_z_m = -1.0;
+static constexpr double initial_pose_x_m = +0.0;
+static constexpr double initial_pose_y_m = +1.45;
+static constexpr double initial_pose_z_m = -1.4;
 static constexpr double initial_pose_roll_rad = 0.0;
 static constexpr double initial_pose_pitch_rad = 0.0;
-static constexpr double initial_pose_yaw_rad = 0.0;
+static constexpr double initial_pose_yaw_rad = -90.0 * M_PI / 180.0;
 
 static constexpr double pos_tol = 0.15;
 static constexpr double yaw_tol = 5.0 * M_PI / 180.0;

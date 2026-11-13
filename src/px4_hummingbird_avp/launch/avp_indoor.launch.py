@@ -1,0 +1,110 @@
+import fcntl
+import os
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+_launch_lock = None
+
+
+def _hold_launch_lock():
+    global _launch_lock
+    domain_id = os.environ.get('ROS_DOMAIN_ID', '0')
+    lock_path = Path('/tmp') / f'px4_hummingbird_avp_{os.getuid()}_{domain_id}.lock'
+    _launch_lock = os.open(lock_path, os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(_launch_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        os.close(_launch_lock)
+        raise RuntimeError('AVP is already running. Stop the previous AVP launch before starting another.') from exc
+
+
+def generate_launch_description():
+    _hold_launch_lock()
+    enable_ev = LaunchConfiguration('enable_ev')
+    enable_planner = LaunchConfiguration('enable_planner')
+    enable_executor = LaunchConfiguration('enable_executor')
+    enable_cmd = LaunchConfiguration('enable_cmd')
+    enable_rviz = LaunchConfiguration('enable_rviz')
+    auto_offboard = LaunchConfiguration('auto_offboard')
+    auto_arm = LaunchConfiguration('auto_arm')
+    require_control = LaunchConfiguration('require_control')
+    bridge_config = str(Path(get_package_share_directory('px4_hummingbird_avp')) / 'config' / 'bridge.yaml')
+    rviz_config = str(Path(get_package_share_directory('px4_hummingbird_avp')) / 'config' / 'avp_indoor.rviz')
+
+    return LaunchDescription([
+        DeclareLaunchArgument('enable_ev', default_value='false'),
+        DeclareLaunchArgument('enable_planner', default_value='true'),
+        DeclareLaunchArgument('enable_executor', default_value='false'),
+        DeclareLaunchArgument('enable_cmd', default_value='false'),
+        DeclareLaunchArgument('enable_rviz', default_value='false'),
+        DeclareLaunchArgument('auto_offboard', default_value='false'),
+        DeclareLaunchArgument('auto_arm', default_value='false'),
+        DeclareLaunchArgument('require_control', default_value='true'),
+        DeclareLaunchArgument('setpoint_topic', default_value='/avp/setpoint'),
+        Node(
+            package='ros_gz_bridge', executable='parameter_bridge',
+            name='avp_gz_bridge', output='screen',
+            parameters=[{'config_file': bridge_config}],
+        ),
+        Node(
+            package='px4_hummingbird_avp', executable='avp_bridge.py',
+            output='screen',
+            parameters=[{
+                'use_sim_time': True,
+                'enable_ev': ParameterValue(enable_ev, value_type=bool),
+            }],
+        ),
+        Node(
+            package='px4_hummingbird_avp', executable='lics_avp_planner.py',
+            output='screen', condition=IfCondition(enable_planner),
+            parameters=[{
+                'use_sim_time': True,
+                'roi_cx': 0.0, 'roi_cy': 0.0, 'roi_r': 1.2,
+                'roi_z_min': 0.6, 'roi_z_max': 2.6,
+                'd_opt': 1.45, 'd_min': 1.2, 'd_max': 1.7,
+                'max_range': 6.0, 'vp_safety_margin': 0.5,
+                'w_frontier': 20.0, 'plan_period_s': 2.0,
+                'sqc_min': 4.0, 'min_cluster': 8,
+                'corridor_cx': 0.0, 'corridor_cy': 0.0,
+                'corridor_theta_min_deg': 0.0, 'corridor_theta_max_deg': 360.0,
+                'corridor_r_min': 1.2, 'corridor_r_max': 1.7,
+                'corridor_z_min': 0.8, 'corridor_z_max': 2.2,
+            }],
+        ),
+        Node(
+            package='px4_hummingbird_avp', executable='lics_corridor_executor.py',
+            output='screen', condition=IfCondition(enable_executor),
+            parameters=[{
+                'use_sim_time': True,
+                'center_x': 0.0, 'center_y': 0.0,
+                'theta_min_deg': 0.0, 'theta_max_deg': 360.0,
+                'r_min': 1.2, 'r_max': 1.7,
+                'z_min': 0.8, 'z_max': 2.2,
+                'z_levels': [1.2, 1.9], 'passes': 2,
+                'cruise_speed': 0.3, 'cam_pitch_deg': -15.0,
+                'setpoint_topic': LaunchConfiguration('setpoint_topic'),
+                'require_control': ParameterValue(require_control, value_type=bool),
+            }],
+        ),
+        Node(
+            package='px4_hummingbird_cmd', executable='px4_position_cmd',
+            name='px4_position_cmd', output='screen', condition=IfCondition(enable_cmd),
+            parameters=[{
+                'path': 'ext',
+                'auto_offboard': ParameterValue(auto_offboard, value_type=bool),
+                'auto_arm': ParameterValue(auto_arm, value_type=bool),
+            }],
+        ),
+        Node(
+            package='rviz2', executable='rviz2', name='avp_rviz',
+            output='screen', condition=IfCondition(enable_rviz),
+            arguments=['-d', rviz_config], parameters=[{'use_sim_time': True}],
+        ),
+    ])
