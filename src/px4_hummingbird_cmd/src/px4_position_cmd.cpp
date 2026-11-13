@@ -283,6 +283,8 @@ private:
     else if (trajectory_name_ == "step_att") path_target = utils::stepAttPath(trajectory_time_sec);
     else if (trajectory_name_ == "circle_demo") path_target = utils::circle_demo(trajectory_time_sec);
     else if (trajectory_name_ == "demo_straight") path_target = utils::demo_straight(trajectory_time_sec);
+    else if (trajectory_name_ == "avp") path_target = utils::avp_demo(trajectory_time_sec);
+    else if (trajectory_name_ == "avp_full") path_target = utils::avp_full_demo(trajectory_time_sec);
     else RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Unknown path. Holding initial pose.");
 
     utils::TargetCMD target = path_target;
@@ -302,8 +304,8 @@ private:
 
     message.timestamp = timestamp_us;
     message.position = {static_cast<float>(target.x), static_cast<float>(target.y), static_cast<float>(target.z)};
-    const bool moving_path = trajectory_name_ == "pos" || trajectory_name_ == "demo_straight";
-    message.velocity = {moving_path ? static_cast<float>(target.vx) : nan, moving_path ? static_cast<float>(target.vy) : nan, nan};
+    const bool moving_path = trajectory_name_ == "pos" || trajectory_name_ == "demo_straight" || trajectory_name_ == "avp" || trajectory_name_ == "avp_full";
+    message.velocity = {moving_path ? static_cast<float>(target.vx) : nan, moving_path ? static_cast<float>(target.vy) : nan, moving_path ? static_cast<float>(target.vz) : nan};
     message.acceleration = {nan, nan, nan};
     message.jerk = {nan, nan, nan};
     message.quaternion = {static_cast<float>(quaternion(0)), static_cast<float>(quaternion(1)),static_cast<float>(quaternion(2)),static_cast<float>(quaternion(3))};
