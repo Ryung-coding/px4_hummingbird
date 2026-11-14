@@ -36,8 +36,12 @@ static constexpr double initial_pose_pitch_rad = 0.0;
 static constexpr double initial_pose_yaw_rad = -90.0 * M_PI / 180.0;
 
 static constexpr double pos_tol = 0.15;
+static constexpr double avp_initial_pos_tol = 0.05;
 static constexpr double yaw_tol = 5.0 * M_PI / 180.0;
 static constexpr double att_tol = 5.0 * M_PI / 180.0;
+
+static constexpr char avp_offline_log_dir[] = "~/Desktop/px4_hummingbird/src/px4_hummingbird_avp/logs";
+static constexpr char avp_offline_log_file[] = "avp_20261114_034959_185986Z.jsonl";
 
 // Task parameters -----------------------------------------------
 static constexpr double ROLL_MAX = 20.0 * M_PI / 180.0;

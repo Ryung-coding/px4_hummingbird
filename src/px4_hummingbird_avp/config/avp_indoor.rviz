@@ -60,8 +60,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 5.082039833068848
-        Min Value: 0.9159489870071411
+        Max Value: 2.896707534790039
+        Min Value: -1.1801719665527344e-05
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -139,7 +139,7 @@ Visualization Manager:
       Enabled: true
       Name: AVP viewpoints
       Namespaces:
-        {}
+        vp: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -164,8 +164,10 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Name: AVP path (current segment + anchors)
+      Name: AVP paths (base sweep + viewpoints)
       Namespaces:
+        anchors: true
+        base_sweep: true
         bounds: true
         corridor: true
       Topic:
@@ -244,17 +246,37 @@ Visualization Manager:
         Value: /avp/preview_setpoint
       Value: true
     - Alpha: 1
-      Axes Length: 1
-      Axes Radius: 0.10000000149011612
+      Axes Length: 0.44999998807907104
+      Axes Radius: 0.02500000037252903
       Class: rviz_default_plugins/Pose
       Color: 255; 25; 0
       Enabled: true
       Head Length: 0.20000000298023224
       Head Radius: 0.10000000149011612
-      Name: Setpoint (/avp/setpoint)
+      Name: Base sweep attitude
       Shaft Length: 0.6000000238418579
       Shaft Radius: 0.03999999910593033
-      Shape: Arrow
+      Shape: Axes
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /avp/base_setpoint
+      Value: true
+    - Alpha: 1
+      Axes Length: 0.44999998807907104
+      Axes Radius: 0.02500000037252903
+      Class: rviz_default_plugins/Pose
+      Color: 20; 190; 245
+      Enabled: true
+      Head Length: 0.30000001192092896
+      Head Radius: 0.10000000149011612
+      Name: AVP viewpoint attitude
+      Shaft Length: 1
+      Shaft Radius: 0.05000000074505806
+      Shape: Axes
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -320,25 +342,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 8.743181228637695
+      Distance: 6.720767021179199
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 1.5
+        X: -0.8274932503700256
+        Y: -0.043120574206113815
+        Z: 1.2669531106948853
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6452032923698425
+      Pitch: 0.38520416617393494
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 4.6100053787231445
+      Yaw: 0.919184684753418
     Saved: ~
 Window Geometry:
   Displays:

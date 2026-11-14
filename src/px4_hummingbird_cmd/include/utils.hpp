@@ -157,6 +157,26 @@ inline TargetCMD RC2DDS_handoff(const TargetCMD& initial_pose, HandoffFilters& f
 }
 
 // Path utils =========================================================
+
+inline TargetCMD hoverPath()
+{
+  TargetCMD cmd;
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = 0.0;
+
+  cmd.vx = 0.0;
+  cmd.vy = 0.0;
+  cmd.vz = 0.0;
+
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = params::initial_pose_yaw_rad;
+
+  return cmd;
+}
+
 inline TargetCMD posPath(double t)
 {
   static constexpr bool TWO_POINT = true;

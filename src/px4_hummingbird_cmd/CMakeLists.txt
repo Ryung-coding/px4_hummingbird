@@ -12,6 +12,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 # Load the ROS vendor packages before looking up their Gazebo libraries.
@@ -64,6 +65,7 @@ target_link_libraries(px4_servo_to_dynamixel
 ament_target_dependencies(px4_position_cmd
   rclcpp
   geometry_msgs
+  std_msgs
   px4_msgs
 )
 

@@ -2,15 +2,22 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <vector>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rapidjson/document.h>
+#include <std_msgs/msg/bool.hpp>
 
 #include <px4_msgs/msg/hummingbird_status.hpp>
 #include <px4_msgs/msg/offboard_control_mode.hpp>
@@ -33,6 +40,7 @@ public:
     trajectory_name_ = this->declare_parameter<std::string>("path", "pos");
     auto_offboard_   = this->declare_parameter<bool>("auto_offboard", true);
     auto_arm_        = this->declare_parameter<bool>("auto_arm", false);
+    if (trajectory_name_ == "avp_offline") load_offline_path();
 
     offboard_mode_publisher_   = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
     trajectory_publisher_      = this->create_publisher<px4_msgs::msg::TrajectorySetpoint6dof>("/fmu/in/trajectory_setpoint6dof", 10);
@@ -46,9 +54,11 @@ public:
     vehicle_attitude_subscription_    = this->create_subscription<px4_msgs::msg::VehicleAttitude>("/fmu/out/vehicle_attitude", qos, std::bind(&Px4PositionCommand::vehicle_attitude_callback, this, std::placeholders::_1));
     vehicle_status_subscription_     = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status", qos, std::bind(&Px4PositionCommand::vehicle_status_callback, this, std::placeholders::_1));
 
+
     if (trajectory_name_ == "ext")
     {
       ext_timeout_sec_ = std::max(0.1, this->declare_parameter<double>("ext_timeout_sec", 1.0));
+      path_ready_publisher_ = this->create_publisher<std_msgs::msg::Bool>("/avp/path_ready", rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
       ext_setpoint_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         "/avp/setpoint", 10, std::bind(&Px4PositionCommand::ext_setpoint_callback, this, std::placeholders::_1));
       RCLCPP_INFO(this->get_logger(), "External setpoint mode: /avp/setpoint (map ENU/FLU), timeout=%.2fs", ext_timeout_sec_);
@@ -159,7 +169,7 @@ private:
   // PX4 status, Offboard on/off, Armming on/off, Navigation state
   void vehicle_status_callback(const px4_msgs::msg::VehicleStatus::SharedPtr message)
   {
-    note_input("/fmu/out/vehicle_status", has_vehicle_status_, last_vehicle_status_time_, vehicle_status_missing_, 0.5);
+    note_input("/fmu/out/vehicle_status", has_vehicle_status_, last_vehicle_status_time_, vehicle_status_missing_, 0.8);
     if (!has_vehicle_status_ || vehicle_status_.nav_state != message->nav_state ||
         vehicle_status_.arming_state != message->arming_state || vehicle_status_.failsafe != message->failsafe ||
         vehicle_status_.failure_detector_status != message->failure_detector_status)
@@ -178,24 +188,16 @@ private:
     last_vehicle_status_time_ = std::chrono::steady_clock::now();
   }
 
-  void ext_setpoint_callback(const geometry_msgs::msg::PoseStamped::SharedPtr message)
+  struct OfflinePoint
   {
-    if (message->header.frame_id != "map")
-    {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Ignoring /avp/setpoint: expected map frame.");
-      return;
-    }
+    double time_sec;
+    utils::TargetCMD target;
+  };
 
-    const Eigen::Vector3d pos_enu(message->pose.position.x, message->pose.position.y, message->pose.position.z);
-    Eigen::Quaterniond q_enu_flu(message->pose.orientation.w, message->pose.orientation.x,
-                                message->pose.orientation.y, message->pose.orientation.z);
+  bool avp_pose_to_target(const Eigen::Vector3d& pos_enu, Eigen::Quaterniond q_enu_flu, utils::TargetCMD& target) const
+  {
     const double q_norm = q_enu_flu.norm();
-
-    if (!pos_enu.allFinite() || !std::isfinite(q_norm) || q_norm < 1e-6)
-    {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Ignoring invalid /avp/setpoint pose.");
-      return;
-    }
+    if (!pos_enu.allFinite() || !std::isfinite(q_norm) || q_norm < 1e-6) return false;
 
     q_enu_flu.normalize();
     Eigen::Matrix3d R_ned_enu;
@@ -207,13 +209,138 @@ private:
     const Eigen::Quaterniond q_ned_frd(R_ned_enu * q_enu_flu.toRotationMatrix() * R_flu_frd);
     const Eigen::Vector3d rpy = utils::quatToRpy(
       Eigen::Vector4d(q_ned_frd.w(), q_ned_frd.x(), q_ned_frd.y(), q_ned_frd.z()));
+    if (!rpy.allFinite()) return false;
 
-    ext_target_.x = pos_ned.x();
-    ext_target_.y = pos_ned.y();
-    ext_target_.z = pos_ned.z();
-    ext_target_.roll = std::clamp(rpy.x(), -params::ROLL_MAX, params::ROLL_MAX);
-    ext_target_.pitch = std::clamp(rpy.y(), -params::PITCH_MAX, params::PITCH_MAX);
-    ext_target_.yaw = utils::unwrapNear(rpy.z(), last_target_.yaw);
+    target.x = pos_ned.x();
+    target.y = pos_ned.y();
+    target.z = pos_ned.z();
+    target.roll = std::clamp(rpy.x(), -params::ROLL_MAX, params::ROLL_MAX);
+    target.pitch = std::clamp(rpy.y(), -params::PITCH_MAX, params::PITCH_MAX);
+    target.yaw = rpy.z();
+    return true;
+  }
+
+  void load_offline_path()
+  {
+    const char* home = std::getenv("HOME");
+    if (!home) throw std::runtime_error("HOME is unset; cannot locate AVP offline log.");
+    std::string dir = params::avp_offline_log_dir;
+    if (dir.rfind("~/", 0) == 0) dir = std::string(home) + dir.substr(1);
+    const std::filesystem::path log_path = std::filesystem::path(dir) / params::avp_offline_log_file;
+    std::ifstream file(log_path);
+    if (!file) throw std::runtime_error("AVP offline log cannot be opened: " + log_path.string());
+
+    std::string line;
+    std::size_t line_no = 0;
+    uint64_t first_ns = 0;
+    uint64_t last_ns = 0;
+    while (std::getline(file, line))
+    {
+      ++line_no;
+      rapidjson::Document record;
+      record.Parse(line.c_str());
+      if (record.HasParseError() || !record.IsObject())
+        throw std::runtime_error("Invalid AVP JSONL at line " + std::to_string(line_no));
+      const auto topic = record.FindMember("topic");
+      if (topic == record.MemberEnd() || !topic->value.IsString() ||
+          std::string(topic->value.GetString()) != "/avp/setpoint") continue;
+      if (!record.HasMember("frame_id") || !record["frame_id"].IsString() ||
+          std::string(record["frame_id"].GetString()) != "map" ||
+          !record.HasMember("monotonic_ns") || !record["monotonic_ns"].IsUint64() ||
+          !record.HasMember("position") || !record["position"].IsArray() ||
+          !record.HasMember("quaternion") || !record["quaternion"].IsArray())
+        throw std::runtime_error("Invalid /avp/setpoint at line " + std::to_string(line_no));
+
+      const auto& p = record["position"];
+      const auto& q = record["quaternion"];
+      if (p.Size() != 3 || q.Size() != 4 ||
+          !p[0].IsNumber() || !p[1].IsNumber() || !p[2].IsNumber() ||
+          !q[0].IsNumber() || !q[1].IsNumber() || !q[2].IsNumber() || !q[3].IsNumber())
+        throw std::runtime_error("Invalid AVP pose array at line " + std::to_string(line_no));
+
+      utils::TargetCMD target{};
+      if (!avp_pose_to_target(
+            Eigen::Vector3d(p[0].GetDouble(), p[1].GetDouble(), p[2].GetDouble()),
+            Eigen::Quaterniond(q[0].GetDouble(), q[1].GetDouble(), q[2].GetDouble(), q[3].GetDouble()),
+            target))
+        throw std::runtime_error("Non-finite AVP pose at line " + std::to_string(line_no));
+
+      const uint64_t stamp_ns = record["monotonic_ns"].GetUint64();
+      if (offline_path_.empty()) first_ns = stamp_ns;
+      else if (stamp_ns <= last_ns)
+        throw std::runtime_error("Non-increasing AVP timestamps at line " + std::to_string(line_no));
+      target.yaw = utils::unwrapNear(target.yaw, offline_path_.empty() ?
+        params::initial_pose_yaw_rad : offline_path_.back().target.yaw);
+      offline_path_.push_back({static_cast<double>(stamp_ns - first_ns) * 1e-9, target});
+      last_ns = stamp_ns;
+    }
+    if (offline_path_.empty())
+      throw std::runtime_error("AVP offline log has no /avp/setpoint samples: " + log_path.string());
+
+    const auto& start = offline_path_.front().target;
+    const auto expected = utils::initialPose();
+    const double pos_error = Eigen::Vector3d(start.x - expected.x, start.y - expected.y, start.z - expected.z).norm();
+    const double roll_error = utils::angleErrorAbs(start.roll, expected.roll);
+    const double pitch_error = utils::angleErrorAbs(start.pitch, expected.pitch);
+    const double yaw_error = utils::angleErrorAbs(start.yaw, expected.yaw);
+    if (pos_error > params::avp_initial_pos_tol ||
+        roll_error > params::att_tol || pitch_error > params::att_tol || yaw_error > params::yaw_tol)
+    {
+      RCLCPP_ERROR(this->get_logger(),
+        "AVP log start NED=(%.3f, %.3f, %.3f), RPY=(%.1f, %.1f, %.1f) deg; "
+        "initialPose NED=(%.3f, %.3f, %.3f), RPY=(%.1f, %.1f, %.1f) deg. "
+        "Mismatch: position=%.3fm (limit %.3fm). No Offboard/Arm command will be sent.",
+        start.x, start.y, start.z, start.roll * 180.0 / M_PI, start.pitch * 180.0 / M_PI, start.yaw * 180.0 / M_PI,
+        expected.x, expected.y, expected.z, expected.roll * 180.0 / M_PI,
+        expected.pitch * 180.0 / M_PI, expected.yaw * 180.0 / M_PI,
+        pos_error, params::avp_initial_pos_tol);
+      throw std::runtime_error("AVP offline start pose does not match initialPose().");
+    }
+    RCLCPP_INFO(this->get_logger(), "AVP offline: %zu samples, %.1fs, %s",
+      offline_path_.size(), offline_path_.back().time_sec, log_path.c_str());
+  }
+
+  utils::TargetCMD offline_target_at(double time_sec) const
+  {
+    const auto it = std::lower_bound(offline_path_.begin(), offline_path_.end(), time_sec,
+      [](const OfflinePoint& point, double time) { return point.time_sec < time; });
+    if (it == offline_path_.begin()) return it->target;
+    if (it == offline_path_.end()) return offline_path_.back().target;
+
+    const auto& before = *(it - 1);
+    const double fraction = (time_sec - before.time_sec) / (it->time_sec - before.time_sec);
+    const auto blend = [fraction](double a, double b) { return a + fraction * (b - a); };
+    utils::TargetCMD target = before.target;
+    target.x = blend(before.target.x, it->target.x);
+    target.y = blend(before.target.y, it->target.y);
+    target.z = blend(before.target.z, it->target.z);
+    target.roll = blend(before.target.roll, it->target.roll);
+    target.pitch = blend(before.target.pitch, it->target.pitch);
+    target.yaw = blend(before.target.yaw, it->target.yaw);
+    return target;
+  }
+
+  void ext_setpoint_callback(const geometry_msgs::msg::PoseStamped::SharedPtr message)
+  {
+    if (message->header.frame_id != "map")
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Ignoring /avp/setpoint: expected map frame.");
+      return;
+    }
+
+    const auto& pose = message->pose;
+    utils::TargetCMD target{};
+    if (!avp_pose_to_target(
+          Eigen::Vector3d(pose.position.x, pose.position.y, pose.position.z),
+          Eigen::Quaterniond(pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z),
+          target))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Ignoring invalid /avp/setpoint pose.");
+      return;
+    }
+
+    ext_target_ = target;
+    ext_target_.yaw = utils::unwrapNear(ext_target_.yaw, last_target_.yaw);
     has_ext_target_ = true;
     last_ext_time_ = std::chrono::steady_clock::now();
   }
@@ -221,7 +348,6 @@ private:
   void wait_offboard(uint64_t timestamp_us, double elapsed_sec)
   {
     if (elapsed_sec < params::command_delay_sec) return;
-
     const bool offboard_mode_active = vehicle_status_.nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
 
     // offboard request
@@ -327,7 +453,18 @@ private:
 
     utils::TargetCMD target = last_target_;
 
-    if (trajectory_name_ == "ext")
+    if (trajectory_name_ == "avp_offline") {
+      const double dt = std::max(0.0, elapsed_sec - offline_last_elapsed_sec_);
+      offline_last_elapsed_sec_ = elapsed_sec;
+      offline_replay_time_sec_ += dt;
+      target = offline_target_at(offline_replay_time_sec_);
+      if (!offline_finished_ && offline_replay_time_sec_ >= offline_path_.back().time_sec)
+      {
+        offline_finished_ = true;
+        RCLCPP_INFO(this->get_logger(), "AVP offline replay completed. Holding final pose.");
+      }
+
+    } else if (trajectory_name_ == "ext")
     {
       const double age_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_ext_time_).count();
 
@@ -343,7 +480,8 @@ private:
     } else {
       utils::TargetCMD path_target{};
 
-      if      (trajectory_name_ == "pos")      path_target = utils::posPath(trajectory_time_sec);
+      if      (trajectory_name_ == "hover")    path_target = utils::hoverPath();
+      else if (trajectory_name_ == "pos")      path_target = utils::posPath(trajectory_time_sec);
       else if (trajectory_name_ == "att")      path_target = utils::attPath(trajectory_time_sec);
       else if (trajectory_name_ == "step_att") path_target = utils::stepAttPath(trajectory_time_sec);
       else if (trajectory_name_ == "circle_demo") path_target = utils::circle_demo(trajectory_time_sec);
@@ -412,7 +550,8 @@ private:
     const double att_error = std::max(roll_error, pitch_error);
     const double yaw_error = utils::angleErrorAbs(local_position_.heading, initial_target.yaw);
 
-    return pos_error.norm() <= params::pos_tol
+    return pos_error.norm() <= ((trajectory_name_ == "ext" || trajectory_name_ == "avp_offline") ?
+      params::avp_initial_pos_tol : params::pos_tol)
       && yaw_error <= params::yaw_tol
       && att_error <= params::att_tol;
   }
@@ -444,6 +583,12 @@ private:
     pos_y = params::initial_pose_y_m;
     pos_z = params::initial_pose_z_m;
     trajectory_start_time_sec_ = elapsed_sec;
+    if (trajectory_name_ == "avp_offline")
+    {
+      offline_last_elapsed_sec_ = elapsed_sec;
+      offline_replay_time_sec_ = 0.0;
+      offline_finished_ = false;
+    }
     control_mode_ = ControlMode::path_active;
     last_target_ = initial_target;
 
@@ -514,6 +659,16 @@ private:
 
     previous_dds_control_enabled_ = dds_control_enabled;
 
+    if (path_ready_publisher_)
+    {
+      std_msgs::msg::Bool ready{};
+      ready.data = dds_control_enabled && vehicle_status_fresh &&
+        vehicle_status_.nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD &&
+        (!auto_arm_ || vehicle_status_.arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED) &&
+        control_mode_ == ControlMode::path_active;
+      path_ready_publisher_->publish(ready);
+    }
+
     if (dds_control_enabled)
     {
       px4_msgs::msg::OffboardControlMode message{};
@@ -574,6 +729,7 @@ private:
   rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_mode_publisher_;
   rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint6dof>::SharedPtr trajectory_publisher_;
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr path_ready_publisher_;
 
   rclcpp::Subscription<px4_msgs::msg::HummingbirdStatus>::SharedPtr hummingbird_status_subscription_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
@@ -600,6 +756,10 @@ private:
   utils::HandoffFilters rc2dds_handoff_filters_{};
 
   std::string trajectory_name_;
+  std::vector<OfflinePoint> offline_path_;
+  double offline_replay_time_sec_{0.0};
+  double offline_last_elapsed_sec_{0.0};
+  bool offline_finished_{false};
   utils::TargetCMD ext_target_{};
   std::chrono::steady_clock::time_point last_ext_time_{};
   double ext_timeout_sec_{1.0};
@@ -633,7 +793,15 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<Px4PositionCommand>());
+  try
+  {
+    rclcpp::spin(std::make_shared<Px4PositionCommand>());
+
+  } catch (const std::exception& error) {
+    RCLCPP_ERROR(rclcpp::get_logger("px4_position_cmd"), "Startup failed: %s", error.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
 
   return 0;

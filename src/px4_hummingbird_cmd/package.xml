@@ -9,6 +9,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>rclcpp</depend>
   <depend>px4_msgs</depend>
   <exec_depend>rclpy</exec_depend>
@@ -20,6 +21,7 @@
   <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <depend>Eigen3</depend>
+  <build_depend>rapidjson-dev</build_depend>
   <depend>gz_msgs_vendor</depend>
   <depend>gz_transport_vendor</depend>
   <depend>dynamixel_sdk</depend>

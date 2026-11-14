@@ -32,7 +32,7 @@ from rclpy.qos import (QoSProfile, QoSReliabilityPolicy,
                        QoSDurabilityPolicy, QoSHistoryPolicy)
 
 from sensor_msgs.msg import PointCloud2, PointField
-from std_msgs.msg import Float32MultiArray, Header
+from std_msgs.msg import Float32MultiArray, Header, Bool
 import struct
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, Pose, PoseArray
@@ -67,7 +67,7 @@ class AvpPlanner(Node):
         self.declare_parameter('pixel_stride', 6)
         self.declare_parameter('ray_stride', 4)
         self.declare_parameter('process_hz', 2.0)
-        self.declare_parameter('max_range', 9.0)
+        self.declare_parameter('max_range', 3.5)
         # SQC
         self.declare_parameter('d_min', 2.0)
         self.declare_parameter('d_max', 5.0)
@@ -93,8 +93,9 @@ class AvpPlanner(Node):
         # [LICS] 적응형 코리더: ROI 중심 기준 각도별 장애물 최대 반경 + 코리더 주변 OCC 복셀 발행
         self.declare_parameter('profile_bins', 36)
         self.declare_parameter('profile_dz', 0.5)          # 고도 띠 두께 (m) — 띠별 수관 반경
-        self.declare_parameter('occ_pub_r_max', 6.0)      # 이 반경 안 OCC 복셀만 실행기에 전달
+        self.declare_parameter('occ_pub_r_max', 3.0)      # 이 반경 안 OCC 복셀만 실행기에 전달
         self.declare_parameter('max_look_down_deg', 35.0)
+        self.declare_parameter('max_pitch_deg', 30.0)
         self.declare_parameter('vp_safety_margin', 0.6)
         # v2b 경로계획
         self.declare_parameter('plan_period_s', 2.5)
@@ -139,6 +140,7 @@ class AvpPlanner(Node):
         self.prof_dz = float(gp('profile_dz'))
         self.occ_pub_r = float(gp('occ_pub_r_max'))
         self.max_elev = math.radians(float(gp('max_look_down_deg')))
+        self.max_pitch = math.radians(min(90.0, max(0.0, float(gp('max_pitch_deg')))))
         self.vp_margin = float(gp('vp_safety_margin'))
         self.plan_res = float(gp('plan_res'))
         self.inflate = float(gp('inflate_m'))
@@ -164,6 +166,8 @@ class AvpPlanner(Node):
         self.vox = {}
         self.last_proc_t = -1e9
         self.last_tf_warn_t = -1e9
+        self.path_ready = False
+        self.last_ready_t = -1e9
         self.frames = 0
         self.visited = []                # [(pos ENU, t)]
         self.cur_target = None           # 발행 중 목표 (ENU, snap됨)
@@ -177,6 +181,7 @@ class AvpPlanner(Node):
                          history=QoSHistoryPolicy.KEEP_LAST, depth=1)
         self.create_subscription(PointCloud2, '/rgbd_camera/points',
                                  self.cloud_cb, qos)
+        self.create_subscription(Bool, '/avp/path_ready', self.ready_cb, 1)
 
         self.pub_normals = self.create_publisher(MarkerArray, '/surface/normals', 1)
         self.pub_coverage = self.create_publisher(MarkerArray, '/surface/coverage', 1)
@@ -196,8 +201,14 @@ class AvpPlanner(Node):
 
     # ================= 맵 갱신 (기존 동일) =================
 
+    def ready_cb(self, msg: Bool):
+        self.path_ready = bool(msg.data)
+        self.last_ready_t = self.get_clock().now().nanoseconds / 1e9
+
     def cloud_cb(self, msg: PointCloud2):
         now = self.get_clock().now().nanoseconds / 1e9
+        if not self.path_ready or now - self.last_ready_t > 0.5:
+            return
         if now - self.last_proc_t < self.min_dt:
             return
         try:
@@ -280,6 +291,9 @@ class AvpPlanner(Node):
     # ================= 계획 루프 =================
 
     def plan_cb(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+        if not self.path_ready or now - self.last_ready_t > 0.5:
+            return
         if not self.vox:
             return
         drone = self._drone_pos()
@@ -403,6 +417,8 @@ class AvpPlanner(Node):
                     cand = p['center'] + self._tilt_up(vdir) * self.d_opt * dmul
                     if cand[2] < self.vp_min_z:
                         continue
+                if not self._pitch_ok(p['center'] - cand):
+                    continue
                 if self._inside_corridor(cand) and self._vp_safe(cand):
                     vp = cand; break
             if vp is None:
@@ -453,6 +469,8 @@ class AvpPlanner(Node):
                 if nl < 0.5:
                     continue
                 lk = lk / nl
+                if not self._pitch_ok(lk):
+                    continue
                 if np.linalg.norm(gpos - drone) < self.visit_r:
                     self.visited.append((pc.copy(), now))   # 이미 그 자리 = 방문 처리
                     continue
@@ -627,6 +645,10 @@ class AvpPlanner(Node):
         return order
 
     # ================= 시점 유틸 (기존) =================
+
+    def _pitch_ok(self, look):
+        pitch = math.atan2(float(look[2]), float(np.linalg.norm(look[:2])))
+        return abs(pitch) <= self.max_pitch
 
     # ================= [LICS] 적응형 코리더 정보 =================
 

@@ -9,7 +9,7 @@ v3 (실내 조경수 환경):
     z_levels 로 바꿔가며 훑음 (예: 1.0,2.2 → 1패스 낮게, 2패스 높게)
   - 시점: /avp/viewpoints_data(ENU PoseArray, 방향에 pitch 포함) 를 코리더로 클램프, 부채꼴 밖은 버림,
     진행방향 앞의 것만 앵커로 방문(dwell). 시점의 **pitch 를 기체 자세로 그대로 명령** (fully-actuated)
-  - 평상시 pitch = cam_pitch_deg, 앵커 dwell 중 pitch = 시점 pitch (ROLL/PITCH 한계는 ext 노드가 클램프)
+  - 시점 접근 중 pitch 를 보간하고, 앵커 dwell 중 시점 pitch 유지 (ROLL/PITCH 한계는 ext 노드가 클램프)
   - yaw: 항상 center-facing
   - 입력 /lics/odom (ENU), 출력 /avp/setpoint (PoseStamped, map/ENU)
 
@@ -31,7 +31,7 @@ from geometry_msgs.msg import PoseStamped, PoseArray, Point
 from nav_msgs.msg import Odometry
 from px4_msgs.msg import VehicleStatus, HummingbirdStatus
 from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Bool
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
 
@@ -96,7 +96,8 @@ class CorridorExecutor(Node):
         dp('guard_deg', 15.0)
         dp('replan_min_s', 1.5)
         dp('cam_pitch_deg', 0.0)                            # 순항 중 기체 pitch (+ = 기수 하향)
-        dp('use_vp_pitch', True)                            # dwell 시 시점 pitch 사용
+        dp('use_vp_pitch', True)                            # 시점 접근/체류 중 시점 pitch 사용
+        dp('pitch_rate_deg_s', 30.0)                         # pitch 명령 변화율 상한 (0이면 제한 없음)
         dp('setpoint_topic', '/avp/setpoint'); dp('odom_topic', '/lics/odom')
         dp('wait_vp_s', 5.0)                               # 시점 없이도 이 시간 후 출발 (코리더 순항으로 데이터 수집)
         # [LICS] 맵 기반 안전
@@ -128,6 +129,7 @@ class CorridorExecutor(Node):
         self.replan_min = float(gp('replan_min_s'))
         self.cam_pitch = math.radians(float(gp('cam_pitch_deg')))
         self.use_vp_pitch = bool(gp('use_vp_pitch'))
+        self.pitch_rate = math.radians(float(gp('pitch_rate_deg_s')))
         self.last_replan_t = -1e9
         self.rmid = 0.5*(self.rmin+self.rmax)
         self.wait_vp_s = float(gp('wait_vp_s'))
@@ -159,6 +161,8 @@ class CorridorExecutor(Node):
         self.last_status_t = None
         self.hb_status = None
         self.last_hb_t = None
+        self.path_ready = False
+        self.last_ready_t = None
         self.latest = None                 # [(theta, r, z, pitch)]  theta ∈ [th_min, th_max]
         self.batch_dirty = False
         self.pass_i = 0
@@ -170,11 +174,15 @@ class CorridorExecutor(Node):
         self.S = None; self.cum = None; self.L = 0.0
         self.s = 0.0; self.v = 0.0
         self.seg_is_vp = False; self.seg_tgt = None
+        self.seg_pitch_start = 0.0; self.seg_pitch_end = 0.0
         self.dwell_t0 = None
         self.cur_cmd_pos = None; self.cur_cmd_yaw = 0.0; self.cur_cmd_pitch = 0.0
+        self.last_pitch_t = None
         self.last_tick_t = None
         self.visited_n = 0
         self.trail = []; self.trail_last_t = -1e9
+        self.base_r = None; self.base_theta0 = None; self.base_z0 = None; self.base_z_target = None
+        self.base_last_t = -1e9
 
         qos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
                          durability=QoSDurabilityPolicy.VOLATILE,
@@ -182,10 +190,12 @@ class CorridorExecutor(Node):
         self.create_subscription(Odometry, str(gp('odom_topic')), self.odom_cb, qos)
         self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self.status_cb, qos)
         self.create_subscription(HummingbirdStatus, '/fmu/out/hummingbird_status', self.hb_cb, qos)
+        self.create_subscription(Bool, '/avp/path_ready', self.ready_cb, 1)
         self.create_subscription(PoseArray, '/avp/viewpoints_data', self.vp_cb, 1)
         self.create_subscription(Float32MultiArray, '/avp/corridor_profile', self.profile_cb, 1)
         self.create_subscription(PointCloud2, '/avp/occ_voxels', self.occ_cb, 1)
         self.sp_pub = self.create_publisher(PoseStamped, str(gp('setpoint_topic')), 10)
+        self.base_pub = self.create_publisher(PoseStamped, '/avp/base_setpoint', 10)
         self.path_pub = self.create_publisher(MarkerArray, '/avp/path', 1)
         self.trail_pub = self.create_publisher(MarkerArray, '/avp/trail', 1)
         self.safety_pub = self.create_publisher(MarkerArray, '/avp/safety_region', 1)
@@ -211,6 +221,10 @@ class CorridorExecutor(Node):
     def hb_cb(self, msg: HummingbirdStatus):
         self.hb_status = msg
         self.last_hb_t = self._now()
+
+    def ready_cb(self, msg: Bool):
+        self.path_ready = bool(msg.data)
+        self.last_ready_t = self._now()
 
     def profile_cb(self, msg: Float32MultiArray):
         if not self.adaptive or len(msg.data) < 4:
@@ -355,6 +369,8 @@ class CorridorExecutor(Node):
         self.S, self.cum, self.L = S, cum, float(cum[-1])
         self.s = 0.0
         self.seg_tgt = (tgt_th, tgt_r, tgt_z)
+        self.seg_pitch_start = self.cur_cmd_pitch
+        self.seg_pitch_end = self.anchors[0][3] if (self.seg_is_vp and self.use_vp_pitch) else self.cam_pitch
         self._publish_path()
 
     # ---------------- 메인 루프 ----------------
@@ -367,6 +383,9 @@ class CorridorExecutor(Node):
             self.theta_end = from_theta + 2.0*math.pi*self.dir
         else:
             self.theta_end = self.th_max if self.dir > 0 else self.th_min
+        self.base_z0 = self.z_cur if self.base_z_target is None else self.base_z_target
+        self.base_z_target = self.z_levels[min(self.pass_i, len(self.z_levels)-1)]
+        self.base_theta0 = from_theta
         self.theta_cur = from_theta
         self.last_replan_t = -1e9
         self._rebuild_anchors()
@@ -390,7 +409,8 @@ class CorridorExecutor(Node):
             and now - self.last_status_t <= 1.0
             and self.vehicle_status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
             and self.hb_status is not None and self.last_hb_t is not None
-            and now - self.last_hb_t <= 1.0 and self.hb_status.dds_command_enabled))
+            and now - self.last_hb_t <= 1.0 and self.hb_status.dds_command_enabled
+            and self.path_ready and self.last_ready_t is not None and now - self.last_ready_t <= 0.5))
         if not odom_fresh or not control_ready:
             if self.phase != 'wait':
                 self.phase = 'wait'
@@ -400,7 +420,10 @@ class CorridorExecutor(Node):
                 self.lead_in = False
                 self.t_first_odom = None
                 self.cur_cmd_pos = None
-                self.get_logger().warn('AVP paused: odometry or DDS/Offboard control unavailable')
+                self.base_z_target = None
+                self.cur_cmd_pitch = 0.0
+                self.last_pitch_t = None
+                self.get_logger().warn('AVP paused: odometry, DDS/Offboard, or initial pose not ready')
             return
 
         if self.phase == 'wait':
@@ -415,12 +438,16 @@ class CorridorExecutor(Node):
                 self.latest = []
             d = self.pos_enu[:2] - self.c
             th = self._theta_in_sector(math.atan2(d[1], d[0]))
-            if th is None:
-                # 부채꼴 밖에서 시작 → 가까운 끝으로 스냅
-                th = self.th_min if abs(wrap_pi(math.atan2(d[1], d[0]) - self.th_min)) < \
-                     abs(wrap_pi(math.atan2(d[1], d[0]) - self.th_max)) else self.th_max
-            self.r_cur = float(np.clip(np.linalg.norm(d), self.rmin, self.rmax))
-            self.z_cur = float(np.clip(self.pos_enu[2], self.zmin, self.zmax))
+            r = float(np.linalg.norm(d))
+            z = float(self.pos_enu[2])
+            if th is None or not (self.zmin <= z <= self.zmax) or r > self.rmax or (th is not None and r < self._rmin_at(th, z) - 0.02):
+                if now - self._blocked_warn_t > 2.0:
+                    self._blocked_warn_t = now
+                    self.get_logger().warn('AVP start outside safe corridor; holding initial pose')
+                return
+            self.r_cur = r
+            self.z_cur = z
+            self.base_r = r
             if self.ring or abs(th - self.th_min) < 1e-3 or abs(th - self.th_max) < 1e-3:
                 self.dir = +1 if (th - self.th_min) <= (self.th_max - th) else -1
                 self._start_pass(th)
@@ -437,8 +464,7 @@ class CorridorExecutor(Node):
             return
 
         if self.phase == 'dwell':
-            pitch = self.anchors[0][3] if (self.use_vp_pitch and self.anchors) else self.cam_pitch
-            self._publish(self.S[-1], self._face_center_yaw(self.S[-1]), pitch)
+            self._publish(self.S[-1], self._face_center_yaw(self.S[-1]), self.seg_pitch_end)
             if now - self.dwell_t0 >= self.dwell_s:
                 if self.batch_dirty:
                     self.batch_dirty = False
@@ -479,7 +505,10 @@ class CorridorExecutor(Node):
                 self.v = min(self.vc, self.v + self.acc*dt)
             next_s = min(self.L, self.s + self.v*dt)
             pos = self._sample_at(next_s)
-            if not self._publish(pos, self._face_center_yaw(pos), self.cam_pitch):
+            u = min(1.0, next_s / self.L) if self.L > 1e-6 else 1.0
+            blend = u*u*(3.0 - 2.0*u)
+            pitch = self.seg_pitch_start + (self.seg_pitch_end - self.seg_pitch_start)*blend
+            if not self._publish(pos, self._face_center_yaw(pos), pitch):
                 self.v = 0.0
                 return
             self.s = next_s
@@ -529,6 +558,11 @@ class CorridorExecutor(Node):
 
     def _face_center_yaw(self, pos_enu):
         return math.atan2(self.c[1] - pos_enu[1], self.c[0] - pos_enu[0])
+
+    def _base_point(self, theta):
+        span = self.theta_end - self.base_theta0
+        u = float(np.clip((theta - self.base_theta0) / span, 0.0, 1.0)) if abs(span) > 1e-6 else 0.0
+        return self._pt(theta, self.base_r, self.base_z0 + (self.base_z_target - self.base_z0) * u)
 
     def _clamp_corridor(self, pos_enu):
         """스플라인 보간이 r_min 안쪽/ r_max 바깥으로 파고드는 것을 막는 최종 안전 클램프."""
@@ -583,6 +617,11 @@ class CorridorExecutor(Node):
         pos_enu = self._clamp_corridor(np.asarray(pos_enu, dtype=float))
         if pos_enu is None:
             return False
+        t_ = self._now()
+        if self.pitch_rate > 0.0:
+            dt_pitch = 1.0/self.rate if self.last_pitch_t is None else max(0.0, min(t_ - self.last_pitch_t, 0.05))
+            pitch = self.cur_cmd_pitch + float(np.clip(float(pitch) - self.cur_cmd_pitch, -self.pitch_rate*dt_pitch, self.pitch_rate*dt_pitch))
+        self.last_pitch_t = t_
         pm = PoseStamped()
         pm.header.stamp = self.get_clock().now().to_msg()
         pm.header.frame_id = 'map'
@@ -591,9 +630,19 @@ class CorridorExecutor(Node):
         pm.pose.orientation.w, pm.pose.orientation.x = w, x
         pm.pose.orientation.y, pm.pose.orientation.z = y, z
         self.sp_pub.publish(pm)
+        if self.base_theta0 is not None and t_ - self.base_last_t >= 0.1:
+            theta = self.theta_cur + wrap_pi(math.atan2(pos_enu[1] - self.c[1], pos_enu[0] - self.c[0]) - self.theta_cur)
+            base = self._base_point(theta)
+            if np.linalg.norm(base[:2] - self.c) <= self.rmax:
+                ref = PoseStamped(); ref.header = pm.header
+                ref.pose.position.x, ref.pose.position.y, ref.pose.position.z = map(float, base)
+                w, x, y, z = rpy_to_quat(0.0, self.cam_pitch, self._face_center_yaw(base))
+                ref.pose.orientation.w, ref.pose.orientation.x = w, x
+                ref.pose.orientation.y, ref.pose.orientation.z = y, z
+                self.base_pub.publish(ref)
+                self.base_last_t = t_
         self.cur_cmd_pos = np.array(pos_enu, dtype=float)
         self.cur_cmd_yaw = float(yaw_enu); self.cur_cmd_pitch = float(pitch)
-        t_ = self._now()
         if t_ - self.trail_last_t > 0.25:
             self.trail_last_t = t_
             self.trail.append(self.cur_cmd_pos.copy())
@@ -625,6 +674,16 @@ class CorridorExecutor(Node):
         for p in self.S:
             line.points.append(Point(x=float(p[0]), y=float(p[1]), z=float(p[2])))
         ma.markers.append(line)
+        if self.base_r is not None:
+            base = Marker(); base.header.frame_id = 'map'; base.header.stamp = stamp
+            base.ns = 'base_sweep'; base.id = 3; base.type = Marker.LINE_STRIP; base.action = Marker.ADD
+            base.scale.x = 0.04; base.color.r, base.color.g, base.color.b, base.color.a = 1.0, 0.65, 0.0, 0.95
+            for i in range(81):
+                th = self.base_theta0 + (self.theta_end - self.base_theta0) * i / 80
+                p = self._base_point(th)
+                if np.linalg.norm(p[:2] - self.c) <= self.rmax:
+                    base.points.append(Point(x=float(p[0]), y=float(p[1]), z=float(p[2])))
+            ma.markers.append(base)
         if self.anchors:
             sph = Marker(); sph.header.frame_id = 'map'; sph.header.stamp = stamp
             sph.ns = 'anchors'; sph.id = 2; sph.type = Marker.SPHERE_LIST; sph.action = Marker.ADD
