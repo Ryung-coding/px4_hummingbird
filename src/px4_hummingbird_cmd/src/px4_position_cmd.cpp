@@ -150,7 +150,7 @@ private:
   // PX4 status, Offboard on/off, Armming on/off, Navigation state
   void vehicle_status_callback(const px4_msgs::msg::VehicleStatus::SharedPtr message)
   {
-    note_input("/fmu/out/vehicle_status", has_vehicle_status_, last_vehicle_status_time_, vehicle_status_missing_, 0.5);
+    note_input("/fmu/out/vehicle_status", has_vehicle_status_, last_vehicle_status_time_, vehicle_status_missing_, 0.8);
     if (!has_vehicle_status_ || vehicle_status_.nav_state != message->nav_state ||
         vehicle_status_.arming_state != message->arming_state || vehicle_status_.failsafe != message->failsafe ||
         vehicle_status_.failure_detector_status != message->failure_detector_status)
@@ -278,7 +278,8 @@ private:
 
     utils::TargetCMD path_target{};
 
-    if      (trajectory_name_ == "pos")      path_target = utils::posPath(trajectory_time_sec);
+    if      (trajectory_name_ == "hover")    path_target = utils::hoverPath();
+    else if (trajectory_name_ == "pos")      path_target = utils::posPath(trajectory_time_sec);
     else if (trajectory_name_ == "att")      path_target = utils::attPath(trajectory_time_sec);
     else if (trajectory_name_ == "step_att") path_target = utils::stepAttPath(trajectory_time_sec);
     else if (trajectory_name_ == "circle_demo") path_target = utils::circle_demo(trajectory_time_sec);

@@ -199,6 +199,13 @@ inline TargetCMD RC2DDS_handoff(const TargetCMD& initial_pose, HandoffFilters& f
 }
 
 // Path utils =========================================================
+inline TargetCMD hoverPath()
+{
+  TargetCMD cmd;
+  cmd.yaw = params::initial_pose_yaw_rad;
+  return cmd;
+}
+
 inline TargetCMD posPath(double t)
 {
   static constexpr bool TWO_POINT = false;
@@ -441,12 +448,12 @@ inline TargetCMD avp_demo(double t)
   const double phi = w * (orbit_t < RAMP_SEC ? orbit_t * orbit_t / (2.0 * RAMP_SEC) : orbit_t - RAMP_SEC / 2.0);
   const double phi_dot = w * std::min(orbit_t / RAMP_SEC, 1.0);
 
-  cmd.x = RADIUS * std::sin(phi) - params::initial_pose_x_m;
-  cmd.y = RADIUS * std::cos(phi) - params::initial_pose_y_m;
+  cmd.x = RADIUS * std::sin(phi);
+  cmd.y = RADIUS * (std::cos(phi) - 1.0);
 
   cmd.vx = RADIUS * std::cos(phi) * phi_dot;
   cmd.vy = -RADIUS * std::sin(phi) * phi_dot;
-  cmd.yaw = -M_PI / 2.0 - phi;
+  cmd.yaw = params::initial_pose_yaw_rad - phi;
 
   return cmd;
 }
@@ -454,7 +461,7 @@ inline TargetCMD avp_demo(double t)
 inline TargetCMD avp_full_demo(double t)
 {
   static constexpr double HOVER_SEC = 3.0, RAMP_SEC = 2.0, PERIOD_SEC = 30.0;
-  static constexpr double RADIUS = 1.58, ELEV_MAX = 40.0 * M_PI / 180.0;
+  static constexpr double RADIUS = 1.45, ELEV_MAX = 30.0 * M_PI / 180.0;
   TargetCMD cmd;
   cmd.yaw = params::initial_pose_yaw_rad;
   if (t < HOVER_SEC) return cmd;
@@ -474,7 +481,7 @@ inline TargetCMD avp_full_demo(double t)
   cmd.vy = r_xy_dot * std::cos(phi) - r_xy * std::sin(phi) * phi_dot;
   cmd.vz = -RADIUS * std::cos(elev) * elev_dot;
   cmd.pitch = -elev;
-  cmd.yaw = -M_PI / 2.0 - phi;
+  cmd.yaw = params::initial_pose_yaw_rad - phi;
   return cmd;
 }
 
