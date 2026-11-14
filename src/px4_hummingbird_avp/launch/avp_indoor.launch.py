@@ -2,11 +2,14 @@ import fcntl
 import os
 from pathlib import Path
 
+import yaml
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -25,9 +28,74 @@ def _hold_launch_lock():
         raise RuntimeError('AVP is already running. Stop the previous AVP launch before starting another.') from exc
 
 
+def _camera_nodes(context):
+    mode = LaunchConfiguration('mode').perform(context)
+    if mode not in ('sim', 'real'):
+        raise RuntimeError(f'Unsupported AVP mode: {mode}. Use sim or real.')
+
+    if mode == 'sim':
+        return [
+            Node(
+                package='ros_gz_bridge', executable='parameter_bridge',
+                name='avp_gz_bridge', output='screen',
+                parameters=[{'config_file': LaunchConfiguration('bridge_config')}],
+            ),
+            Node(
+                package='px4_hummingbird_avp', executable='avp_bridge.py',
+                output='screen',
+                parameters=[{'use_sim_time': True,
+                             'enable_ev': ParameterValue(LaunchConfiguration('enable_ev'),
+                                                         value_type=bool)}],
+            ),
+        ]
+
+    oak_config_file = LaunchConfiguration('oak_config_file').perform(context)
+    with open(oak_config_file, encoding='utf-8') as config_file:
+        mount = yaml.safe_load(config_file)['/avp_oak']['ros__parameters']
+    if mount['parent_frame'] != 'base_link':
+        raise ValueError('OAK parent_frame must be base_link for the current AVP TF tree.')
+    pos = mount['position_m']
+    rpy = mount['rpy_rad']
+    driver_share = get_package_share_directory('depthai_ros_driver_v3')
+    driver_launch = str(Path(driver_share) / 'launch' / 'driver.launch.py')
+
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(driver_launch),
+            launch_arguments={
+                'name': 'oak',
+                'params_file': oak_config_file,
+                'parent_frame': mount['parent_frame'],
+                'cam_pos_x': str(pos['x']),
+                'cam_pos_y': str(pos['y']),
+                'cam_pos_z': str(pos['z']),
+                'cam_roll': str(rpy['roll']),
+                'cam_pitch': str(rpy['pitch']),
+                'cam_yaw': str(rpy['yaw']),
+                'use_rviz': 'false',
+                'publish_tf_from_calibration': 'true',
+            }.items(),
+        ),
+        Node(
+            package='px4_hummingbird_avp', executable='oak_pointcloud.py',
+            output='screen',
+            parameters=[{'depth_image_topic': mount['depth_image_topic'],
+                         'camera_info_topic': mount['camera_info_topic'],
+                         'sample_step': int(mount['sample_step']),
+                         'max_depth_m': float(mount['max_depth_m'])}],
+        ),
+        Node(
+            package='px4_hummingbird_avp', executable='avp_bridge.py',
+            output='screen',
+            parameters=[{'use_sim_time': False,
+                         'enable_ev': False,
+                         'publish_camera_tf': False}],
+        ),
+    ]
+
+
 def generate_launch_description():
     _hold_launch_lock()
-    enable_ev = LaunchConfiguration('enable_ev')
     enable_planner = LaunchConfiguration('enable_planner')
     enable_logger = LaunchConfiguration('enable_logger')
     enable_executor = LaunchConfiguration('enable_executor')
@@ -37,10 +105,18 @@ def generate_launch_description():
     auto_offboard = LaunchConfiguration('auto_offboard')
     auto_arm = LaunchConfiguration('auto_arm')
     require_control = LaunchConfiguration('require_control')
-    bridge_config = str(Path(get_package_share_directory('px4_hummingbird_avp')) / 'config' / 'bridge.yaml')
-    rviz_config = str(Path(get_package_share_directory('px4_hummingbird_avp')) / 'config' / 'avp_indoor.rviz')
+    package_config = Path(get_package_share_directory('px4_hummingbird_avp')) / 'config'
+    bridge_config = str(package_config / 'bridge.yaml')
+    rviz_config = str(package_config / 'avp_indoor.rviz')
+    sim_time = ParameterValue(PythonExpression([
+        "'", LaunchConfiguration('mode'), "' == 'sim'"]), value_type=bool)
 
     return LaunchDescription([
+        DeclareLaunchArgument('mode', default_value='sim'),
+        DeclareLaunchArgument('bridge_config', default_value=bridge_config),
+        DeclareLaunchArgument('rviz_config', default_value=rviz_config),
+        DeclareLaunchArgument('oak_config_file',
+                              default_value=str(package_config / 'oak_d_pro.yaml')),
         DeclareLaunchArgument('enable_ev', default_value='false'),
         DeclareLaunchArgument('enable_planner', default_value='true'),
         DeclareLaunchArgument('enable_logger', default_value='false'),
@@ -56,21 +132,9 @@ def generate_launch_description():
         Node(
             package='px4_hummingbird_avp', executable='avp_trajectory_logger.py',
             output='screen', condition=IfCondition(enable_logger),
-            parameters=[{'use_sim_time': True, 'log_dir': LaunchConfiguration('log_dir')}],
+            parameters=[{'use_sim_time': sim_time, 'log_dir': LaunchConfiguration('log_dir')}],
         ),
-        Node(
-            package='ros_gz_bridge', executable='parameter_bridge',
-            name='avp_gz_bridge', output='screen',
-            parameters=[{'config_file': bridge_config}],
-        ),
-        Node(
-            package='px4_hummingbird_avp', executable='avp_bridge.py',
-            output='screen',
-            parameters=[{
-                'use_sim_time': True,
-                'enable_ev': ParameterValue(enable_ev, value_type=bool),
-            }],
-        ),
+        OpaqueFunction(function=_camera_nodes),
 
         # ============================================================
         # 1. AVP Planner
@@ -82,7 +146,7 @@ def generate_launch_description():
             package='px4_hummingbird_avp', executable='lics_avp_planner.py',
             output='screen', condition=IfCondition(enable_planner),
             parameters=[{
-                'use_sim_time': True,
+                'use_sim_time': sim_time,
 
                 # [A] ROI: 관측 대상 영역
                 # 이 영역 내부의 표면을 대상으로 관측 품질을 평가 / 비행 가능 영역과는 별개
@@ -142,7 +206,7 @@ def generate_launch_description():
             package='px4_hummingbird_avp', executable='lics_corridor_executor.py',
             output='screen', condition=IfCondition(enable_executor),
             parameters=[{
-                'use_sim_time': True,
+                'use_sim_time': sim_time,
 
                 # [A] Planner의 [E] corridor와 일치시킬 것
                 'center_x': 0.0,       # 원형 궤적 중심 X [m], ENU
@@ -196,6 +260,6 @@ def generate_launch_description():
         Node(
             package='rviz2', executable='rviz2', name='avp_rviz',
             output='screen', condition=IfCondition(enable_rviz),
-            arguments=['-d', rviz_config], parameters=[{'use_sim_time': True}],
+            arguments=['-d', LaunchConfiguration('rviz_config')], parameters=[{'use_sim_time': sim_time}],
         ),
     ])

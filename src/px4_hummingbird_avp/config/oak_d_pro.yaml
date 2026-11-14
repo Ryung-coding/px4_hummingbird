@@ -1,0 +1,30 @@
+/oak:
+  ros__parameters:
+    driver:
+      i_device_id: '19443010D193985A00'
+      i_usb_port_id: ''
+      i_usb_speed: SUPER
+    pipeline_gen:
+      i_pipeline_type: depth
+      i_nn_type: none
+    stereo:
+      i_fps: 10.0
+      i_depth_preset: DEFAULT
+      i_aligned: false
+
+/avp_oak:
+  ros__parameters:
+    physical_usb_port: '3-7'
+    parent_frame: base_link
+    position_m:
+      x: 0.20
+      y: 0.0
+      z: 0.05
+    rpy_rad:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+    depth_image_topic: /oak/stereo/image_raw
+    camera_info_topic: /oak/stereo/camera_info
+    sample_step: 2
+    max_depth_m: 6.0

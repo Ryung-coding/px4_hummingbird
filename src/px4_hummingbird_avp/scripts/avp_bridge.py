@@ -70,6 +70,7 @@ class AvpBridge(Node):
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('publish_tf', True)
+        self.declare_parameter('publish_camera_tf', True)
         self.declare_parameter('enable_ev', False)
         self.declare_parameter('pose_topic', '/model/hummingbird_0/pose')
         self.map_frame = self.get_parameter('map_frame').value
@@ -83,15 +84,16 @@ class AvpBridge(Node):
         self.odom_pub = self.create_publisher(Odometry, '/lics/odom', 10)
         self.pose_pub = self.create_publisher(PoseStamped, '/lics/pose', 10)
         self.tf_bc = TransformBroadcaster(self)
-        self.static_tf_bc = StaticTransformBroadcaster(self)
-        camera_tf = TransformStamped()
-        camera_tf.header.stamp = self.get_clock().now().to_msg()
-        camera_tf.header.frame_id = self.base_frame
-        camera_tf.child_frame_id = 'hummingbird_0/base_link/rgbd_camera'
-        camera_tf.transform.translation.x = 0.20
-        camera_tf.transform.translation.z = 0.05
-        camera_tf.transform.rotation.w = 1.0
-        self.static_tf_bc.sendTransform(camera_tf)
+        if self.get_parameter('publish_camera_tf').value:
+            self.static_tf_bc = StaticTransformBroadcaster(self)
+            camera_tf = TransformStamped()
+            camera_tf.header.stamp = self.get_clock().now().to_msg()
+            camera_tf.header.frame_id = self.base_frame
+            camera_tf.child_frame_id = 'hummingbird_0/base_link/rgbd_camera'
+            camera_tf.transform.translation.x = 0.20
+            camera_tf.transform.translation.z = 0.05
+            camera_tf.transform.rotation.w = 1.0
+            self.static_tf_bc.sendTransform(camera_tf)
 
         if self.get_parameter('enable_ev').value:
             pose_topic = self.get_parameter('pose_topic').value

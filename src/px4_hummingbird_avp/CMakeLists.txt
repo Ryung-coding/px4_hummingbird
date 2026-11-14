@@ -5,6 +5,8 @@ find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
   scripts/avp_bridge.py
+  scripts/oak_pointcloud.py
+  test/test_oak_d_pro.py
   scripts/avp_trajectory_logger.py
   scripts/lics_avp_planner.py
   scripts/lics_corridor_executor.py

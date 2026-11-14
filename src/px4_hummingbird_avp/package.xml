@@ -2,7 +2,7 @@
 <package format="3">
   <name>px4_hummingbird_avp</name>
   <version>0.0.1</version>
-  <description>AVP mapping and corridor nodes for HummingBird simulation.</description>
+  <description>AVP mapping and corridor nodes for HummingBird simulation and OAK-D Pro.</description>
   <maintainer email="ryung9514@naver.com">Ryung</maintainer>
   <license>TODO</license>
 
@@ -26,6 +26,9 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>depthai_ros_driver_v3</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
