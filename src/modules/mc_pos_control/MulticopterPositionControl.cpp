@@ -759,7 +759,7 @@ void MulticopterPositionControl::Run()
 					const float roll_input = entering ? 0.f : _hb_pos_aux_roll_filter.update(aux1);
 					const float pitch_input = entering ? 0.f : _hb_pos_aux_pitch_filter.update(aux2);
 					const float roll_sp = math::radians(math::constrain(_param_hb_pos_r_max.get(), 0.f, 45.f)) * roll_input;
-					const float pitch_sp = math::radians(math::constrain(_param_hb_pos_p_max.get(), 0.f, 45.f)) * pitch_input;
+					const float pitch_sp = math::radians(math::constrain(_param_hb_pos_p_max.get(), 0.f, 85.f)) * pitch_input;
 					const float yaw_sp = Eulerf(Quatf(attitude_setpoint.q_d)).psi();
 					Quatf(Eulerf(roll_sp, pitch_sp, yaw_sp)).copyTo(attitude_setpoint.q_d);
 

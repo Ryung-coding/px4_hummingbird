@@ -150,7 +150,7 @@ PARAM_DEFINE_FLOAT(HB_POS_R_MAX, 10.0f);
  *
  * @unit deg
  * @min 0.0
- * @max 45.0
+ * @max 85.0
  * @decimal 1
  * @group Multicopter Position Control
  */
