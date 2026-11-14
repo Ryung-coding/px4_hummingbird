@@ -721,6 +721,29 @@ void GZBridge::navSatCallback(const gz::msgs::NavSat &msg)
 		return;
 	}
 
+	// Use Gazebo NavSat only to anchor vision odometry globally when GPS has no fix.
+	if (_sim_gps_used.get() < 4 && timestamp - _last_origin_request >= 1_s) {
+		vehicle_local_position_s local_position{};
+
+		if (_local_position_sub.copy(&local_position) && local_position.xy_valid && local_position.z_valid
+		    && !local_position.z_global && timestamp - local_position.timestamp < 1_s) {
+			MapProjection projection;
+			projection.initReference(msg.latitude_deg(), msg.longitude_deg(), timestamp);
+			double origin_latitude;
+			double origin_longitude;
+			projection.reproject(-local_position.x, -local_position.y, origin_latitude, origin_longitude);
+
+			vehicle_command_s command{};
+			command.timestamp = timestamp;
+			command.command = vehicle_command_s::VEHICLE_CMD_SET_GPS_GLOBAL_ORIGIN;
+			command.param5 = origin_latitude;
+			command.param6 = origin_longitude;
+			command.param7 = static_cast<float>(msg.altitude() + static_cast<double>(local_position.z));
+			_vehicle_command_pub.publish(command);
+			_last_origin_request = timestamp;
+		}
+	}
+
 	double latitude = msg.latitude_deg();
 	double longitude = msg.longitude_deg();
 	double altitude = msg.altitude();

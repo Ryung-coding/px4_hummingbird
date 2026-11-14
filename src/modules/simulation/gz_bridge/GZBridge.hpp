@@ -63,6 +63,7 @@
 #include <uORB/topics/wheel_encoders.h>
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_attitude.h>
+#include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_global_position.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_odometry.h>
@@ -140,12 +141,14 @@ private:
 			 float &vel_north, float &vel_east, float &vel_down);
 
 	uORB::SubscriptionInterval                    _parameter_update_sub{ORB_ID(parameter_update), 1_s};
+	uORB::Subscription                            _local_position_sub{ORB_ID(vehicle_local_position)};
 
 	uORB::Publication<distance_sensor_s>          _distance_sensor_pub{ORB_ID(distance_sensor)};
 	uORB::Publication<differential_pressure_s>    _differential_pressure_pub{ORB_ID(differential_pressure)};
 	uORB::Publication<obstacle_distance_s>        _obstacle_distance_pub{ORB_ID(obstacle_distance)};
 	uORB::Publication<vehicle_angular_velocity_s> _angular_velocity_ground_truth_pub{ORB_ID(vehicle_angular_velocity_groundtruth)};
 	uORB::Publication<vehicle_attitude_s>         _attitude_ground_truth_pub{ORB_ID(vehicle_attitude_groundtruth)};
+	uORB::Publication<vehicle_command_s>          _vehicle_command_pub{ORB_ID(vehicle_command)};
 	uORB::Publication<vehicle_global_position_s>  _gpos_ground_truth_pub{ORB_ID(vehicle_global_position_groundtruth)};
 	uORB::Publication<vehicle_local_position_s>   _lpos_ground_truth_pub{ORB_ID(vehicle_local_position_groundtruth)};
 	uORB::PublicationMulti<sensor_gps_s>          _sensor_gps_pub{ORB_ID(sensor_gps)};
@@ -170,6 +173,7 @@ private:
 	matrix::Vector3d _velocity_prev{};
 	matrix::Vector3f _euler_prev{};
 	hrt_abstime _timestamp_prev{};
+	hrt_abstime _last_origin_request{};
 
 	const std::string _world_name;
 	const std::string _model_name;
