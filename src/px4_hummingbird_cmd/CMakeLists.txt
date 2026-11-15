@@ -11,6 +11,8 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(dynamixel_sdk REQUIRED)
@@ -55,6 +57,8 @@ target_link_libraries(demo
 
 ament_target_dependencies(px4_position_cmd
   rclcpp
+  geometry_msgs
+  std_msgs
   px4_msgs
 )
 

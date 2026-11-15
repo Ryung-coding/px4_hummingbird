@@ -9,9 +9,10 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>px4_msgs</depend>
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>px4_hummingbird_opti</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
@@ -20,6 +21,7 @@
   <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <depend>Eigen3</depend>
+  <build_depend>rapidjson-dev</build_depend>
   <depend>dynamixel_sdk</depend>
 
   <export>
