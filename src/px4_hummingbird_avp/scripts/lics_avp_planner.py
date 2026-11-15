@@ -96,6 +96,7 @@ class AvpPlanner(Node):
         self.declare_parameter('occ_pub_r_max', 3.0)      # 이 반경 안 OCC 복셀만 실행기에 전달
         self.declare_parameter('max_look_down_deg', 35.0)
         self.declare_parameter('max_pitch_deg', 30.0)
+        self.declare_parameter('require_path_ready', True)
         self.declare_parameter('vp_safety_margin', 0.6)
         # v2b 경로계획
         self.declare_parameter('plan_period_s', 2.5)
@@ -168,6 +169,7 @@ class AvpPlanner(Node):
         self.last_tf_warn_t = -1e9
         self.path_ready = False
         self.last_ready_t = -1e9
+        self.require_path_ready = bool(gp('require_path_ready'))
         self.frames = 0
         self.visited = []                # [(pos ENU, t)]
         self.cur_target = None           # 발행 중 목표 (ENU, snap됨)
@@ -205,9 +207,12 @@ class AvpPlanner(Node):
         self.path_ready = bool(msg.data)
         self.last_ready_t = self.get_clock().now().nanoseconds / 1e9
 
+    def _ready(self, now):
+        return not self.require_path_ready or (self.path_ready and now - self.last_ready_t <= 0.5)
+
     def cloud_cb(self, msg: PointCloud2):
         now = self.get_clock().now().nanoseconds / 1e9
-        if not self.path_ready or now - self.last_ready_t > 0.5:
+        if not self._ready(now):
             return
         if now - self.last_proc_t < self.min_dt:
             return
@@ -292,7 +297,7 @@ class AvpPlanner(Node):
 
     def plan_cb(self):
         now = self.get_clock().now().nanoseconds / 1e9
-        if not self.path_ready or now - self.last_ready_t > 0.5:
+        if not self._ready(now):
             return
         if not self.vox:
             return

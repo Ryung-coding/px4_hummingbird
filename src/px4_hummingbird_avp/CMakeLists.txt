@@ -7,6 +7,7 @@ install(PROGRAMS
   scripts/avp_bridge.py
   scripts/oak_pointcloud.py
   test/test_oak_d_pro.py
+  test/lics_check.py
   test/record_avp_flight.py
   scripts/avp_trajectory_logger.py
   scripts/lics_avp_planner.py

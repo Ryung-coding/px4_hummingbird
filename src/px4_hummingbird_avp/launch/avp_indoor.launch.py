@@ -44,9 +44,7 @@ def _camera_nodes(context):
             Node(
                 package='px4_hummingbird_avp', executable='avp_bridge.py',
                 output='screen',
-                parameters=[{'use_sim_time': True,
-                             'enable_ev': ParameterValue(LaunchConfiguration('enable_ev'),
-                                                         value_type=bool)}],
+                parameters=[{'use_sim_time': True, 'mode': 'sim'}],
             ),
         ]
 
@@ -89,7 +87,7 @@ def _camera_nodes(context):
             package='px4_hummingbird_avp', executable='avp_bridge.py',
             output='screen',
             parameters=[{'use_sim_time': False,
-                         'enable_ev': False,
+                         'mode': 'real',
                          'publish_camera_tf': False}],
         ),
     ]
@@ -114,7 +112,7 @@ def _flight_recorder_nodes(context):
 
     return [Node(
         package='px4_hummingbird_avp', executable='record_avp_flight.py', output='screen',
-        condition=IfCondition(LaunchConfiguration('enable_flight_record')),
+        condition=IfCondition(LaunchConfiguration('enable_logger')),
         parameters=[{'mode': mode,
                      'use_sim_time': mode == 'sim',
                      'color_topic': color_topic,
@@ -134,15 +132,15 @@ def generate_launch_description():
     enable_rviz = LaunchConfiguration('enable_rviz')
     auto_offboard = LaunchConfiguration('auto_offboard')
     auto_arm = LaunchConfiguration('auto_arm')
+    require_path_ready = LaunchConfiguration('require_path_ready')
     sim_time = ParameterValue(PythonExpression([
         "'", LaunchConfiguration('mode'), "' == 'sim'"]), value_type=bool)
 
     return LaunchDescription([
         DeclareLaunchArgument('mode', default_value='sim'),
-        DeclareLaunchArgument('enable_ev', default_value='false'),
         DeclareLaunchArgument('enable_planner', default_value='true'),
+        DeclareLaunchArgument('require_path_ready', default_value='true'),
         DeclareLaunchArgument('enable_logger', default_value='false'),
-        DeclareLaunchArgument('enable_flight_record', default_value='false'),
         DeclareLaunchArgument('enable_executor', default_value='false'),
         DeclareLaunchArgument('enable_cmd', default_value='false'),
         DeclareLaunchArgument('enable_rviz', default_value='false'),
@@ -150,7 +148,8 @@ def generate_launch_description():
         DeclareLaunchArgument('auto_arm', default_value='false'),
         Node(
             package='px4_hummingbird_avp', executable='avp_trajectory_logger.py',
-            output='screen', condition=IfCondition(enable_logger),
+            output='screen', condition=IfCondition(PythonExpression([
+                "'", enable_logger, "' == 'true' and '", enable_executor, "' == 'true'"])),
             parameters=[{'use_sim_time': sim_time}],
         ),
         OpaqueFunction(function=_camera_nodes),
@@ -159,7 +158,9 @@ def generate_launch_description():
         Node(
             package='px4_hummingbird_avp', executable='lics_avp_planner.py',
             output='screen', condition=IfCondition(enable_planner),
-            parameters=[str(CONFIG_DIR / 'avp_indoor.yaml'), {'use_sim_time': sim_time}],
+            parameters=[str(CONFIG_DIR / 'avp_indoor.yaml'),
+                        {'use_sim_time': sim_time,
+                         'require_path_ready': ParameterValue(require_path_ready, value_type=bool)}],
         ),
         Node(
             package='px4_hummingbird_avp', executable='lics_corridor_executor.py',

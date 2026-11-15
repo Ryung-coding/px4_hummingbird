@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PX4 NED odometry to AVP map/ENU, with optional Gazebo pose to PX4 EV."""
+"""PX4 NED odometry to AVP map/ENU, with Gazebo vision input in sim."""
 import math
 import numpy as np
 import rclpy
@@ -71,7 +71,7 @@ class AvpBridge(Node):
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('publish_tf', True)
         self.declare_parameter('publish_camera_tf', True)
-        self.declare_parameter('enable_ev', False)
+        self.declare_parameter('mode', 'real')
         self.declare_parameter('pose_topic', '/model/hummingbird_0/pose')
         self.map_frame = self.get_parameter('map_frame').value
         self.base_frame = self.get_parameter('base_frame').value
@@ -95,7 +95,7 @@ class AvpBridge(Node):
             camera_tf.transform.rotation.w = 1.0
             self.static_tf_bc.sendTransform(camera_tf)
 
-        if self.get_parameter('enable_ev').value:
+        if self.get_parameter('mode').value == 'sim':
             pose_topic = self.get_parameter('pose_topic').value
             self.ev_pub = self.create_publisher(VehicleOdometry, '/fmu/in/vehicle_visual_odometry', qos)
             self.ev_sub = self.create_subscription(PoseStamped, pose_topic, self.ev_cb, qos)
