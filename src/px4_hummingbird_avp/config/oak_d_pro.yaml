@@ -29,7 +29,7 @@
       y: 0.0
       z: 0.0
     rpy_rad:
-      roll: 0.0
+      roll: 3.141592653589793
       pitch: 0.0
       yaw: 0.0
     color_image_topic: /oak/rgb/image_raw

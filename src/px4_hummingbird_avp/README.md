@@ -73,3 +73,19 @@ PX4 없이 OAK 점군과 `base_link` TF만 확인할 때는 **카메라·TF만 �
 ```bash
 ros2 run px4_hummingbird_avp test_oak_d_pro.py --duration 10
 ```
+
+## 기록 재생
+
+`avp_log_headless`는 `~/Desktop/view_log`의 가장 최근 `flight_*` 폴더와 시간상 겹치는 `*_headless.jsonl`을 자동 선택합니다. 인자로 로그 폴더 또는 JSONL 이름을 주면 해당 기록을 사용합니다. PX4/SITL/Agent 없이 실행하며 `/fmu/in/*`에 명령을 발행하지 않습니다.
+
+```bash
+avp_log_headless
+avp_log_headless 1115_072325_headless
+avp_log_headless flight_20261115_072343_446391Z 1115_072325_headless
+avp_log_headless 1115_072325_headless --no-rviz
+avp_log_headless 1115_072325_headless --check
+```
+
+시간 슬라이더와 재생 속도는 RViz와 Python 분석 창에 공통으로 적용됩니다. RViz에는 기체 TF/경로, PX4 목표 경로, 기록된 AVP 시점·경로, 원본 깊이에서 재생한 점군이 표시됩니다. Python 창에는 XY/고도, 각속도·모터·서보 출력, RGB 영상과 현재 목표 오차가 표시됩니다. 모든 ROS 출력은 `/avp_replay/*`로 분리됩니다.
+
+11/15 기록에는 `/avp/setpoint`가 없으므로 목표는 실제 기록된 `/fmu/in/trajectory_setpoint6dof`입니다. `flight_*` 폴더의 `events.jsonl`, `setpoints.csv`, `odometry.csv`, `rgb.mp4`, `depth_raw/`가 함께 있어야 영상·깊이까지 재생됩니다.
