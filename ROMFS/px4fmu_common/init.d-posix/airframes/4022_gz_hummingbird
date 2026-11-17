@@ -8,8 +8,10 @@
 . ${R}etc/init.d/rc.mc_defaults
 
 PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
-PX4_GZ_WORLD=${PX4_GZ_WORLD:=lics_ki_indoor}
+PX4_GZ_WORLD=${PX4_GZ_WORLD:=KI_demo_KARPE}
 PX4_SIM_MODEL=${PX4_SIM_MODEL:=hummingbird}
+# Gazebo ENU yaw +90 deg corresponds to PX4 NED yaw 0 deg.
+PX4_GZ_MODEL_POSE=${PX4_GZ_MODEL_POSE:=0,0,0.08,0,0,1.57079632679}
 
 param set-default SIM_GZ_EN 1
 

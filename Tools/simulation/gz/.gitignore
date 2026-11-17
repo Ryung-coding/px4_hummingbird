@@ -3,4 +3,7 @@
 !models/
 models/*
 !models/hummingbird/
+!worlds/
+worlds/*
+!worlds/KI_demo_KARPE.sdf
 !models/hummingbird/**
