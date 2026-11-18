@@ -404,54 +404,71 @@ inline TargetCMD demo_straight(double t)
 
 inline TargetCMD avp_demo(double t)
 {
-  static constexpr double HOVER_SEC = 3.0, RAMP_SEC = 2.0, PERIOD_SEC = 30.0;
-  static constexpr double RADIUS = 1.45;
-  
+  static constexpr double HOVER_SEC = 3.0, MOVE_SEC = 10.0, HOLD_SEC = 2.0;
   TargetCMD cmd;
   cmd.yaw = params::initial_pose_yaw_rad;
-  
-  if (t < HOVER_SEC) return cmd;
+  double remaining = std::max(0.0, t) - HOVER_SEC;
+  if (remaining <= 0.0) return cmd;
 
-  const double orbit_t = t - HOVER_SEC;
-  const double w = 2.0 * M_PI / PERIOD_SEC;
-  const double phi = w * (orbit_t < RAMP_SEC ? orbit_t * orbit_t / (2.0 * RAMP_SEC) : orbit_t - RAMP_SEC / 2.0);
-  const double phi_dot = w * std::min(orbit_t / RAMP_SEC, 1.0);
+  // Offsets are relative to initialPose(); each sweep reverses X.
+  for (int level = 0; level < 4; ++level)
+  {
+    const double start_x = level % 2 == 0 ? 1.0 : -1.0;
+    const double delta_x = level % 2 == 0 ? -2.0 : 2.0;
+    cmd.x = start_x - params::initial_pose_x_m;
 
-  cmd.x = RADIUS * std::sin(phi) - params::initial_pose_x_m;
-  cmd.y = RADIUS * std::cos(phi) - params::initial_pose_y_m;
+    if (remaining <= MOVE_SEC)
+    {
+      const double u = remaining / MOVE_SEC;
+      const double s = u * u * (3.0 - 2.0 * u);
+      cmd.x += delta_x * s;
+      cmd.vx = delta_x * 6.0 * u * (1.0 - u) / MOVE_SEC;
+      return cmd;
+    }
 
-  cmd.vx = RADIUS * std::cos(phi) * phi_dot;
-  cmd.vy = -RADIUS * std::sin(phi) * phi_dot;
-  cmd.yaw = -M_PI / 2.0 - phi;
+    remaining -= MOVE_SEC;
+    cmd.x += delta_x;
+    if (level == 3 || remaining <= HOLD_SEC) return cmd;
+    remaining -= HOLD_SEC;
+  }
 
   return cmd;
 }
 
 inline TargetCMD avp_full_demo(double t)
 {
-  static constexpr double HOVER_SEC = 3.0, RAMP_SEC = 2.0, PERIOD_SEC = 30.0;
-  static constexpr double RADIUS = 1.58, ELEV_MAX = 40.0 * M_PI / 180.0;
+  static constexpr double HOVER_SEC = 3.0, MOVE_SEC = 10.0, HOLD_SEC = 2.0;
+  static constexpr double PITCH_MAX = 30.0 * M_PI / 180.0;
   TargetCMD cmd;
   cmd.yaw = params::initial_pose_yaw_rad;
-  if (t < HOVER_SEC) return cmd;
+  double remaining = std::max(0.0, t) - HOVER_SEC;
+  if (remaining <= 0.0) return cmd;
 
-  const double orbit_t = t - HOVER_SEC;
-  const double w = 2.0 * M_PI / PERIOD_SEC;
-  const double phi = w * (orbit_t < RAMP_SEC ? orbit_t * orbit_t / (2.0 * RAMP_SEC) : orbit_t - RAMP_SEC / 2.0);
-  const double phi_dot = w * std::min(orbit_t / RAMP_SEC, 1.0);
-  const double elev = ELEV_MAX * std::sin(phi);
-  const double elev_dot = ELEV_MAX * std::cos(phi) * phi_dot;
-  const double r_xy = RADIUS * std::cos(elev);
-  const double r_xy_dot = -RADIUS * std::sin(elev) * elev_dot;
-  cmd.x = r_xy * std::sin(phi);
-  cmd.y = r_xy * std::cos(phi) - RADIUS;
-  cmd.z = -RADIUS * std::sin(elev);
-  cmd.vx = r_xy_dot * std::sin(phi) + r_xy * std::cos(phi) * phi_dot;
-  cmd.vy = r_xy_dot * std::cos(phi) - r_xy * std::sin(phi) * phi_dot;
-  cmd.vz = -RADIUS * std::cos(elev) * elev_dot;
-  cmd.pitch = -elev;
-  cmd.yaw = -M_PI / 2.0 - phi;
+  // Offsets are relative to initialPose(); each sweep reverses X.
+  for (int level = 0; level < 4; ++level)
+  {
+    const double start_x = level % 2 == 0 ? 1.0 : -1.0;
+    const double delta_x = level % 2 == 0 ? -2.0 : 2.0;
+    cmd.x = start_x - params::initial_pose_x_m;
+
+    if (remaining <= MOVE_SEC)
+    {
+      const double u = remaining / MOVE_SEC;
+      const double s = u * u * (3.0 - 2.0 * u);
+      cmd.x += delta_x * s;
+      cmd.vx = delta_x * 6.0 * u * (1.0 - u) / MOVE_SEC;
+      cmd.pitch = PITCH_MAX * std::sin(M_PI * s);
+      return cmd;
+    }
+
+    remaining -= MOVE_SEC;
+    cmd.x += delta_x;
+    if (level == 3 || remaining <= HOLD_SEC) return cmd;
+    remaining -= HOLD_SEC;
+  }
+
   return cmd;
 }
+
 
 }

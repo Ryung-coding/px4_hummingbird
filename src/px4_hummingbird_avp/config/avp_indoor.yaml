@@ -1,74 +1,78 @@
-# AVP Planner / map(ENU) 기준. Planner corridor_*와 Executor 비행 경계를 함께 맞출 것.
+# AVP Planner / map(ENU) 기준. 나무는 X=+1, 비행 경로는 X=0에서 Y=+1 -> -1.
 avp_planner:
   ros__parameters:
-    # [A] 관측 대상 영역(ROI). 비행 가능 영역과는 별개.
-    roi_cx: 0.0          # 나무 중심 X [m]
-    roi_cy: 0.0          # 나무 중심 Y [m]
-    roi_r: 1.2           # 구형 ROI 반경 [m]
-    roi_z_min: 0.5       # ROI 최소 높이 [m]
-    roi_z_max: 2.5       # ROI 최대 높이 [m]
+    # [A] 나무 관측 영역(ROI). 기체 비행 가능 영역과는 별개.
+    roi_x_min: 0.2              # 나무 영역 X 하한 [m]
+    roi_x_max: 1.8              # 나무 영역 X 상한 [m]
+    roi_y_min: -1.8             # 나무 영역 Y 하한 [m]
+    roi_y_max: 1.8              # 나무 영역 Y 상한 [m]
+    roi_z_min: 0.2              # 나무 영역 높이 하한 [m]
+    roi_z_max: 2.5              # 나무 영역 높이 상한 [m]
 
-    # [B] 관측 거리 및 센서 범위.
-    d_opt: 1.0           # 관측 시점과 표면 사이 목표 거리 [m]
-    d_min: 1.2           # SQC 거리 평가 최소 기준 [m]
-    d_max: 1.7           # SQC 거리 평가 최대 기준 [m]
-    max_range: 3.5       # PointCloud 최대 사용 거리 [m]
-    occ_pub_r_max: 3.0   # 중심 기준 Executor 장애물 전달 범위 [m]
-    max_pitch_deg: 30.0  # 시점 선정 시 허용할 기체 Pitch 절댓값 [deg]
-    vp_safety_margin: 0.5 # 관측 시점 주변 장애물 안전 여유 [m]
+    # [B] 지도 해상도, 관측 거리 및 시점 생성.
+    resolution: 0.05            # 지도 복셀 크기 [m]; Executor occ_resolution과 일치
+    plan_res: 0.15              # 경로 탐색 해상도 [m]
+    inflate_m: 0.5              # 경로 탐색 시 장애물 팽창 거리 [m]
+    visit_radius: 0.25          # 관측 시점 도달 판정 반경 [m]
+    d_opt: 0.9                  # 표면 관측 목표 거리 [m]
+    d_min: 0.6                  # 관측 거리 하한 [m]
+    d_max: 1.5                  # 관측 거리 상한 [m]
+    max_range: 3.5              # 입력 점군 최대 사용 거리 [m]
+    max_pitch_deg: 30.0         # 관측 시점의 Pitch 절댓값 제한 [deg]
+    vp_safety_margin: 0.75      # 시점의 장애물 안전 여유 [m]; Executor 0.5 m보다 큼
 
-    # [C] SQC = w_dist*Cd + w_angle*Ca + w_base*Cb + w_frontier*Cu.
-    # 점수가 높은 표면 패치를 우선하여 관측 시점을 생성.
-    w_dist: 1.0          # 거리 가중치: 높이면 적정 거리 밖 표면 우선
-    w_angle: 1.0         # 각도 가중치: 높이면 비스듬히 관측한 표면 우선
-    w_base: 1.0          # 관측 방향 다양성: 높이면 덜 관측된 방향 우선
-    w_frontier: 20.0     # 미관측 경계: 높이면 미관측 영역 주변 우선
-    sqc_min: 1.5         # 후보 점수 하한: 높이면 후보 감소
-    min_cluster: 8       # 최소 표면 패치 크기: 낮추면 작은 패치도 허용(노이즈 증가 가능)
+    # [C] 스윕 높이, 자세 우선 시점 생성 및 SQC 후보 평가.
+    w_dist: 1.0                 # 관측 거리 가중치
+    sweep_z_levels: [1.0]       # 시점 후보 높이 [m]; 실행기의 중복 왕복은 별도
+    vp_pitch_target_deg: 18.0   # 위치보다 카메라 Pitch 변경을 우선하는 목표 각도 [deg]
+    vp_height_offset_m: 0.0     # 스윕 높이에서 시점이 벗어날 수 있는 최대 거리 [m]
+    w_angle: 1.0                # 관측 각도 가중치
+    w_base: 1.0                 # 관측 방향 다양성 가중치
+    w_frontier: 20.0            # 미관측 경계 가중치
+    sqc_min: 0.8                # 시점 후보 점수 하한
+    min_cluster: 4              # 표면 패치의 최소 복셀 수
+    top_k: 12                   # 한 번에 전달할 시점 후보 수
+    plan_period_s: 2.0          # 재계획 주기 [s]
 
-    # [D] 경로 재계획 주기.
-    plan_period_s: 2.0   # AVP 계획 계산 주기 [s]; 낮추면 더 자주 재계획
-
-    # [E] 관측 시점 생성 허용 영역. 아래 Executor 경계와 일치시킬 것.
-    corridor_cx: 0.0     # 코리더 중심 X [m]
-    corridor_cy: 0.0     # 코리더 중심 Y [m]
-    corridor_theta_min_deg: 0.0   # 시작 각도 [deg]
-    corridor_theta_max_deg: 360.0 # 종료 각도 [deg]
-    corridor_r_min: 1.2  # 시점 생성 허용 최소 반경 [m]
-    corridor_r_max: 1.7  # 시점 생성 허용 최대 반경 [m]
-    corridor_z_min: 0.5  # 시점 생성 허용 최소 높이 [m]
-    corridor_z_max: 2.0  # 시점 생성 허용 최대 높이 [m]
+    # [D] 시점 생성 허용 영역. 아래 Executor 비행 경계와 일치시킬 것.
+    corridor_x_min: -0.75       # X 하한 [m]
+    corridor_x_max: 0.75        # X 상한 [m]
+    corridor_y_min: -1.6        # Y 하한 [m]
+    corridor_y_max: 2.1         # Y 상한 [m]
+    corridor_z_min: 0.45        # 높이 하한 [m]
+    corridor_z_max: 2.1         # 높이 상한 [m]
 
 # Corridor Executor / map(ENU) 기준.
 corridor_executor:
   ros__parameters:
-    # [A] Planner의 corridor_*와 일치시킬 비행 경계.
-    center_x: 0.0        # 원형 궤적 중심 X [m]
-    center_y: 0.0        # 원형 궤적 중심 Y [m]
-    theta_min_deg: 0.0   # 비행 시작 각도 [deg]
-    theta_max_deg: 360.0 # 비행 종료 각도 [deg]
-    r_min: 1.2           # 비행 허용 최소 반경 [m]
-    r_max: 1.7           # 비행 허용 최대 반경 [m]
-    z_min: 0.5           # 비행 허용 최소 높이 [m]
-    z_max: 2.0           # 비행 허용 최대 높이 [m]
+    # [A] 비행 코리더. +X 방향에 나무가 있으며 Planner corridor_*와 일치.
+    x_min: -0.75                # 기체 중심 X 하한 [m]
+    x_max: 0.75                 # 기체 중심 X 상한 [m]
+    y_min: -1.6                 # Y 하한 [m]; -Y 스윕 끝보다 0.6 m 여유
+    y_max: 2.1                  # Y 상한 [m]; +Y 스윕 시작보다 1.1 m 여유
+    z_min: 0.45                 # 비행 높이 하한 [m]
+    z_max: 2.1                  # 비행 높이 상한 [m]
 
-    # [B] 기본 스윕 궤적과 관측 시점 방문.
-    z_levels: [0.7]      # 패스별 기본 높이 [m]; 패스가 여러 개면 순서대로 사용
-    passes: 1            # 스윕 패스 횟수; z_levels와 함께 조정
-    cruise_speed: 0.3    # 목표 순항 속도 [m/s]
-    accel: 0.3           # 궤적 가감속 크기 [m/s^2]
-    replan_min_s: 15.0   # 경로 재계획 최소 간격 [s]
-    dwell_s: 5.0         # AVP 관측 시점 도착 후 정지 시간 [s]
-    cam_pitch_deg: 0.0   # 순항 중 기체 Pitch 명령 [deg]; 양수는 기수 하향
-    use_vp_pitch: true   # 시점 접근/체류 중 계산된 Pitch 사용
+    # [B] 기본 스윕과 관측 시점 방문.
+    sweep_y_min: -1.0           # 스윕 Y 하한 [m]; 첫 구간은 +Y에서 시작
+    sweep_y_max: 1.0            # 스윕 Y 상한 [m]
+    z_levels: [1.0, 1.0, 1.0, 1.0] # Y 방향을 번갈아 이동하며 두 번 왕복 [m]
+    cruise_speed: 0.3           # 위치 목표 순항 속도 [m/s]
+    accel: 0.3                  # 궤적 가감속 크기 [m/s^2]
+    level_hold_s: 2.0           # 높이 변경 후 정지 시간 [s]
+    dwell_s: 2.0                # 선택된 관측 시점의 정지 시간 [s]
+    wait_vp_s: 3.0              # 시점 미수신 시 기본 스윕 시작까지 대기 [s]
+    use_vp_pitch: true          # 시점 Pitch로 보간하여 이동
+    pitch_rate_deg_s: 20.0      # Pitch 목표 변화율 제한 [deg/s]
+    vp_merge_m: 0.25            # 가까운 시점 중복 방문 방지 거리 [m]
+    vp_level_tol_m: 0.3         # 현재 스윕 높이와 시점 높이의 허용 차이 [m]
 
-    # [C] 장애물 대응 및 경로 추종 안전.
-    adaptive_corridor: true # 장애물에 따라 최소 비행 반경 자동 조정
-    obs_margin: 0.5      # 관측된 수관 바깥쪽 안전 여유 [m]
-    clear_m: 0.5         # Setpoint 주변 장애물 검사 반경 [m]
-    arrival_tol_m: 0.25  # 목표 위치 도착 판정 오차 [m]
-    tracking_tol_m: 0.5  # 추종 오차 초과 시 경로 진행 일시 정지 [m]
+    # [C] 장애물 대응과 실제 위치 추종 판정.
+    occ_resolution: 0.05        # 장애물 지도 해상도 [m]; Planner resolution과 일치
+    clear_m: 0.5                # 목표 주변 장애물 이격 거리 [m]
+    arrival_tol_m: 0.2          # 실제 위치의 도착 판정 오차 [m]
+    tracking_tol_m: 0.5         # 실제 위치가 뒤처지면 목표 진행을 멈추는 오차 [m]
 
     # [D] PX4 명령 연결.
-    setpoint_topic: /avp/setpoint # Executor가 발행하는 목표 토픽
-    require_control: true         # 제어권이 없으면 경로 진행 정지
+    setpoint_topic: /avp/setpoint # Executor가 발행하는 위치·자세 목표 토픽
+    require_control: true       # DDS/Offboard와 초기 위치가 준비될 때까지 진행 정지

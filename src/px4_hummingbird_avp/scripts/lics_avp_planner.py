@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""
-avp_planner.py — v2b : 경로계획 통합 플래너
---------------------------------------------
-누적 기능 전부 포함:
-  ② voxel 해시맵(occupied/free/unknown) + 관측 통계
-  ③ SQC(거리/각도/베이스라인) + frontier(관측경계, n_obs 감쇠) + 패치 + sqc_min
-  ④ 시점 역산 (지면 제외, 고각 클램프, 시점 안전마진 + 밀어내기)
-신규 (v2b 핵심):
-  ⑤ 시점 선택(방문기억 + 전역투어 첫 노드)과 경로계획을 planner로 통합
-     - 드론 위치: TF map->base_link
-     - coarse grid(plan_res) A*: "known-FREE 셀만 통행" (unknown = 벽!)
-       OCC 팽창 inflate_m. -> 미관측 공간 통과 원천 봉쇄 (FUEL 방식)
-     - string-pulling 간소화 후 /avp/route (PoseArray, ENU) 발행:
-       poses[0..n-2] = via, poses[-1] = 목표(look 쿼터니언)
-     - A* 실패 시점은 투어 다음 후보로 -> 도달 불가 시점 자동 제외
-     - 방문 판정: 드론이 목표 visit_radius 내 진입 시 blacklist(ttl)
-
-실행:
-  python3 ~/avp_planner.py --ros-args -p use_sim_time:=true \
-    -p d_opt:=4.5 -p w_frontier:=20.0 -p plan_period_s:=2.5
-"""
+"""Voxel-based AVP planner for a straight tree row and map/ENU corridor."""
 
 import heapq
 import math
@@ -32,7 +12,7 @@ from rclpy.qos import (QoSProfile, QoSReliabilityPolicy,
                        QoSDurabilityPolicy, QoSHistoryPolicy)
 
 from sensor_msgs.msg import PointCloud2, PointField
-from std_msgs.msg import Float32MultiArray, Header, Bool
+from std_msgs.msg import Header, Bool
 import struct
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, Pose, PoseArray
@@ -84,18 +64,18 @@ class AvpPlanner(Node):
         self.declare_parameter('d_opt', 3.5)
         self.declare_parameter('vp_min_z', 0.5)
         self.declare_parameter('ground_z_max', 0.3)
-        # [LICS] 관심영역(ROI): 대상 나무 중심 원통. 밖의 표면(벽·의자·바닥)은 품질평가/시점생성에서 제외
-        self.declare_parameter('roi_cx', 0.0)
-        self.declare_parameter('roi_cy', 0.0)
-        self.declare_parameter('roi_r', 0.0)        # 0 = ROI 사용 안 함 (기존 동작)
-        self.declare_parameter('roi_z_min', 0.0)
-        self.declare_parameter('roi_z_max', 100.0)
-        # [LICS] 적응형 코리더: ROI 중심 기준 각도별 장애물 최대 반경 + 코리더 주변 OCC 복셀 발행
-        self.declare_parameter('profile_bins', 36)
-        self.declare_parameter('profile_dz', 0.5)          # 고도 띠 두께 (m) — 띠별 수관 반경
-        self.declare_parameter('occ_pub_r_max', 3.0)      # 이 반경 안 OCC 복셀만 실행기에 전달
-        self.declare_parameter('max_look_down_deg', 35.0)
+        # Tree-row ROI and straight flight corridor, both in map/ENU.
+        for name, value in (('roi_x_min', 0.2), ('roi_x_max', 1.8),
+                            ('roi_y_min', -1.8), ('roi_y_max', 1.8),
+                            ('roi_z_min', 0.2), ('roi_z_max', 2.5),
+                            ('corridor_x_min', -0.25), ('corridor_x_max', 0.25),
+                            ('corridor_y_min', -1.1), ('corridor_y_max', 1.1),
+                            ('corridor_z_min', 0.45), ('corridor_z_max', 1.6)):
+            self.declare_parameter(name, value)
         self.declare_parameter('max_pitch_deg', 30.0)
+        self.declare_parameter('sweep_z_levels', [1.0])
+        self.declare_parameter('vp_pitch_target_deg', 18.0)
+        self.declare_parameter('vp_height_offset_m', 0.0)
         self.declare_parameter('require_path_ready', True)
         self.declare_parameter('vp_safety_margin', 0.6)
         # v2b 경로계획
@@ -105,14 +85,6 @@ class AvpPlanner(Node):
         self.declare_parameter('visit_radius', 0.9)      # 도달 판정
         self.declare_parameter('visited_ttl_s', 120.0)
         self.declare_parameter('marker_max', 4000)
-        self.declare_parameter('corridor_cx', 0.0)
-        self.declare_parameter('corridor_cy', 0.0)
-        self.declare_parameter('corridor_theta_min_deg', -180.0)
-        self.declare_parameter('corridor_theta_max_deg', 180.0)
-        self.declare_parameter('corridor_r_min', 0.0)
-        self.declare_parameter('corridor_r_max', 0.0)
-        self.declare_parameter('corridor_z_min', 0.0)
-        self.declare_parameter('corridor_z_max', 100.0)
 
         gp = lambda n: self.get_parameter(n).value
         self.res = float(gp('resolution'))
@@ -134,26 +106,24 @@ class AvpPlanner(Node):
         self.d_opt = float(gp('d_opt'))
         self.vp_min_z = float(gp('vp_min_z'))
         self.ground_z = float(gp('ground_z_max'))
-        self.roi_c = np.array([float(gp('roi_cx')), float(gp('roi_cy'))])
-        self.roi_r = float(gp('roi_r'))
-        self.roi_z = (float(gp('roi_z_min')), float(gp('roi_z_max')))
-        self.prof_bins = int(gp('profile_bins'))
-        self.prof_dz = float(gp('profile_dz'))
-        self.occ_pub_r = float(gp('occ_pub_r_max'))
-        self.max_elev = math.radians(float(gp('max_look_down_deg')))
+        self.roi_min = np.array([float(gp('roi_x_min')), float(gp('roi_y_min')), float(gp('roi_z_min'))])
+        self.roi_max = np.array([float(gp('roi_x_max')), float(gp('roi_y_max')), float(gp('roi_z_max'))])
         self.max_pitch = math.radians(min(90.0, max(0.0, float(gp('max_pitch_deg')))))
+        self.sweep_z_levels = [float(z) for z in gp('sweep_z_levels')]
+        self.vp_pitch_target = math.radians(float(gp('vp_pitch_target_deg')))
+        self.vp_height_offset = float(gp('vp_height_offset_m'))
         self.vp_margin = float(gp('vp_safety_margin'))
         self.plan_res = float(gp('plan_res'))
         self.inflate = float(gp('inflate_m'))
         self.visit_r = float(gp('visit_radius'))
         self.visited_ttl = float(gp('visited_ttl_s'))
         self.marker_max = int(gp('marker_max'))
-        self.corridor_center = np.array([float(gp('corridor_cx')), float(gp('corridor_cy'))])
-        self.corridor_th_min = math.radians(float(gp('corridor_theta_min_deg')))
-        self.corridor_th_max = math.radians(float(gp('corridor_theta_max_deg')))
-        self.corridor_r_min = float(gp('corridor_r_min'))
-        self.corridor_r_max = float(gp('corridor_r_max'))
-        self.corridor_z = (float(gp('corridor_z_min')), float(gp('corridor_z_max')))
+        self.corridor_min = np.array([float(gp('corridor_x_min')), float(gp('corridor_y_min')), float(gp('corridor_z_min'))])
+        self.corridor_max = np.array([float(gp('corridor_x_max')), float(gp('corridor_y_max')), float(gp('corridor_z_max'))])
+        if np.any(self.roi_min >= self.roi_max) or np.any(self.corridor_min >= self.corridor_max):
+            raise ValueError('AVP ROI and corridor require min < max on every axis')
+        if not self.sweep_z_levels or not 0.0 <= self.vp_pitch_target <= self.max_pitch or self.vp_height_offset < 0.0:
+            raise ValueError('Invalid viewpoint pitch or sweep height parameters')
 
         r = int(math.ceil(self.vp_margin / self.res))
         self._safe_off = [(i,j,k) for i in range(-r,r+1) for j in range(-r,r+1)
@@ -192,14 +162,13 @@ class AvpPlanner(Node):
         self.pub_route = self.create_publisher(PoseArray, '/avp/route', 1)
         self.pub_vpd = self.create_publisher(PoseArray, '/avp/viewpoints_data', 1)
         self.pub_route_viz = self.create_publisher(MarkerArray, '/avp/route_viz', 1)
-        self.pub_profile = self.create_publisher(Float32MultiArray, '/avp/corridor_profile', 1)
         self.pub_occ = self.create_publisher(PointCloud2, '/avp/occ_voxels', 1)
 
         self.create_timer(float(gp('plan_period_s')), self.plan_cb)
         self.get_logger().info(
             f'avp_planner v2b ready. res={self.res} plan_res={self.plan_res} '
             f'd_opt={self.d_opt} sqc_min={self.sqc_min} (unknown=blocked A*) '
-            + (f'ROI=({self.roi_c[0]},{self.roi_c[1]}) r={self.roi_r} z={self.roi_z}' if self.roi_r > 0 else 'ROI=off'))
+            + f'ROI box={self.roi_min.tolist()}..{self.roi_max.tolist()}')
 
     # ================= 맵 갱신 (기존 동일) =================
 
@@ -313,7 +282,7 @@ class AvpPlanner(Node):
             elif v.state != OCC:
                 v.state = FREE
 
-        self._publish_corridor_info()
+        self._publish_obstacles()
 
         # 방문 판정/정리
         now = self.get_clock().now().nanoseconds / 1e9
@@ -326,17 +295,12 @@ class AvpPlanner(Node):
 
         # --- 표면/법선 ---
         surf = {}
-        use_roi = self.roi_r > 0.0
-        roi_r2 = self.roi_r * self.roi_r
         for k, v in self.vox.items():
             if v.state != OCC:
                 continue
-            if use_roi:
-                px = (k[0] + 0.5) * self.res - self.roi_c[0]
-                py = (k[1] + 0.5) * self.res - self.roi_c[1]
-                pz = (k[2] + 0.5) * self.res
-                if px*px + py*py > roi_r2 or pz < self.roi_z[0] or pz > self.roi_z[1]:
-                    continue
+            pos = (np.asarray(k, dtype=float) + 0.5) * self.res
+            if np.any(pos < self.roi_min) or np.any(pos > self.roi_max):
+                continue
             n = np.zeros(3); cnt = 0
             for d6 in NEIGH6:
                 nv = self.vox.get((k[0]+d6[0], k[1]+d6[1], k[2]+d6[2]))
@@ -391,20 +355,12 @@ class AvpPlanner(Node):
         if not patches:
             return
 
-        surf_keys = np.array(list(surf.keys()), dtype=float)
-        surf_centroid = (surf_keys.mean(axis=0) + 0.5) * self.res
-
         pinfo = []
         for cl in patches:
             vals = sorted(sqc[k] for k in cl)
             med = vals[len(vals)//2]
             center = (np.array(cl, dtype=float).mean(axis=0) + 0.5) * self.res
-            n_mean = np.zeros(3)
-            for k in cl:
-                n_mean += surf[k]
-            n_mean /= np.linalg.norm(n_mean)
-            pinfo.append({'keys': cl, 'sqc': med, 'center': center,
-                          'normal': n_mean})
+            pinfo.append({'keys': cl, 'sqc': med, 'center': center})
         pinfo.sort(key=lambda p: p['sqc'], reverse=True)
 
         # --- 시점 후보 생성 ---
@@ -414,23 +370,36 @@ class AvpPlanner(Node):
                 break
             if p['center'][2] < self.ground_z:
                 continue
-            vdir = self._cap_elevation(p['normal'], p['center'], surf_centroid)
             vp = None
-            for dmul in (1.0, 1.15, 1.3):
-                cand = p['center'] + vdir * self.d_opt * dmul
-                if cand[2] < self.vp_min_z:
-                    cand = p['center'] + self._tilt_up(vdir) * self.d_opt * dmul
-                    if cand[2] < self.vp_min_z:
+            level = min(self.sweep_z_levels, key=lambda z: abs(z - p['center'][2]))
+            heights = [p['center'][2]] + list(np.percentile(
+                (np.asarray(p['keys'])[:, 2] + 0.5) * self.res, [10, 90]))
+            for dmul in (1.0, 0.75, 1.25, 0.5, 1.5):
+                choices = []
+                for dz in (0.0, self.vp_height_offset, -self.vp_height_offset):
+                    cand = np.clip(p['center'] - np.array([self.d_opt * dmul, 0.0, 0.0]),
+                                   self.corridor_min, self.corridor_max)
+                    cand[2] = level + dz
+                    if (cand[2] < max(self.vp_min_z, self.corridor_min[2] + 0.1)
+                            or not self._inside_corridor(cand) or not self._vp_safe(cand)):
                         continue
-                if not self._pitch_ok(p['center'] - cand):
-                    continue
-                if self._inside_corridor(cand) and self._vp_safe(cand):
-                    vp = cand; break
+                    for aim_z in heights:
+                        if aim_z < self.ground_z:
+                            continue
+                        aim = p['center'].copy()
+                        aim[2] = aim_z
+                        look = aim - cand
+                        if (look[0] <= 0.0 or abs(math.atan2(look[1], look[0])) > math.radians(35.0)
+                                or not self._pitch_ok(look) or not self._visible(cand, aim)):
+                            continue
+                        pitch = abs(math.atan2(float(look[2]), float(np.linalg.norm(look[:2]))))
+                        score = abs(pitch - self.vp_pitch_target) + 0.25 * abs(dz) + 0.08 * abs(aim_z - p['center'][2])
+                        choices.append((score, cand, look))
+                if choices:
+                    _, vp, look = min(choices, key=lambda item: item[0])
+                    break
             if vp is None:
                 continue
-            if not self._visible(vp, p['center']):
-                continue
-            look = p['center'] - vp
             look /= np.linalg.norm(look)
             vps.append((vp, look, p['sqc'], p['center']))
             if len(vps) >= self.top_k:
@@ -454,7 +423,7 @@ class AvpPlanner(Node):
 
         # 방문 필터
         cand = [c for c in vps
-                if all(np.linalg.norm(c[3] - q_) > 1.0
+                if all(np.linalg.norm(c[3] - q_) > self.visit_r
                        for q_, _t in self.visited)]   # 패치 단위 blacklist
 
         # --- 경로계획: coarse known-free A* ---
@@ -469,6 +438,8 @@ class AvpPlanner(Node):
                 if g is None:
                     continue
                 gpos = (np.array(g) + 0.5) * self.plan_res
+                if np.linalg.norm(gpos - vp) > 2.0 * self.plan_res:
+                    continue
                 lk = pc - gpos
                 nl = float(np.linalg.norm(lk))
                 if nl < 0.5:
@@ -476,13 +447,13 @@ class AvpPlanner(Node):
                 lk = lk / nl
                 if not self._pitch_ok(lk):
                     continue
-                if np.linalg.norm(gpos - drone) < self.visit_r:
+                if np.linalg.norm(vp - drone) < self.visit_r:
                     self.visited.append((pc.copy(), now))   # 이미 그 자리 = 방문 처리
                     continue
                 path = self._astar(grid, drone, gpos)
                 if path is not None:
                     route = self._string_pull(grid, [drone] + path)
-                    chosen = (gpos, lk)
+                    chosen = (gpos, look)
                     self.cur_patch = pc.copy()
                     break
 
@@ -655,71 +626,25 @@ class AvpPlanner(Node):
         pitch = math.atan2(float(look[2]), float(np.linalg.norm(look[:2])))
         return abs(pitch) <= self.max_pitch
 
-    # ================= [LICS] 적응형 코리더 정보 =================
-
-    def _publish_corridor_info(self):
-        """ROI 중심 기준: 각도 빈별 OCC 최대 반경(/avp/corridor_profile) + 근처 OCC 복셀 중심(/avp/occ_voxels)."""
-        if self.roi_r <= 0.0:
-            return
-        nb = self.prof_bins
-        z0 = self.roi_z[0]; dz = self.prof_dz
-        nz = max(1, int(math.ceil((self.roi_z[1] - z0) / dz)))
-        prof = [[0.0] * nb for _ in range(nz)]
+    # Publish nearby occupied voxels for executor clearance checks.
+    def _publish_obstacles(self):
+        lo = np.minimum(self.roi_min, self.corridor_min) - 0.5
+        hi = np.maximum(self.roi_max, self.corridor_max) + 0.5
         pts = []
-        r_pub2 = self.occ_pub_r * self.occ_pub_r
         for k, v in self.vox.items():
             if v.state != OCC:
                 continue
-            x = (k[0] + 0.5) * self.res; y = (k[1] + 0.5) * self.res; z = (k[2] + 0.5) * self.res
-            dx = x - self.roi_c[0]; dy = y - self.roi_c[1]
-            d2 = dx*dx + dy*dy
-            if d2 > r_pub2:
-                continue
-            pts.append((x, y, z))
-            if z < self.roi_z[0] or z > self.roi_z[1] or d2 > self.roi_r * self.roi_r:
-                continue
-            b = int(((math.atan2(dy, dx) + 2*math.pi) % (2*math.pi)) / (2*math.pi) * nb) % nb
-            zi = min(nz - 1, max(0, int((z - z0) / dz)))
-            r = math.sqrt(d2)
-            if r > prof[zi][b]:
-                prof[zi][b] = r
-        m = Float32MultiArray()
-        m.data = [float(nb), float(nz), float(z0), float(dz)] + [float(v) for row in prof for v in row]
-        self.pub_profile.publish(m)
-        if pts:
-            hdr = Header(); hdr.frame_id = 'map'; hdr.stamp = self.get_clock().now().to_msg()
-            pc = PointCloud2(); pc.header = hdr; pc.height = 1; pc.width = len(pts)
-            pc.fields = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-                         PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-                         PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)]
-            pc.is_bigendian = False; pc.point_step = 12; pc.row_step = 12 * len(pts); pc.is_dense = True
-            pc.data = np.asarray(pts, dtype=np.float32).tobytes()
-            self.pub_occ.publish(pc)
-
-    def _cap_elevation(self, n, pc, centroid):
-        h = np.array([n[0], n[1]])
-        hn = float(np.linalg.norm(h))
-        elev = math.atan2(float(n[2]), hn)
-        if elev <= self.max_elev:
-            return n / np.linalg.norm(n)
-        if hn > 1e-6:
-            hh = h / hn
-        else:
-            d = pc[:2] - centroid[:2]
-            dn = float(np.linalg.norm(d))
-            hh = d / dn if dn > 1e-6 else np.array([1.0, 0.0])
-        v = np.array([hh[0]*math.cos(self.max_elev),
-                      hh[1]*math.cos(self.max_elev),
-                      math.sin(self.max_elev)])
-        return v / np.linalg.norm(v)
-
-    def _tilt_up(self, n):
-        h = np.array([n[0], n[1], 0.0])
-        hn = np.linalg.norm(h)
-        if hn < 1e-6:
-            return np.array([1.0, 0.0, 0.3]) / np.linalg.norm([1.0, 0.0, 0.3])
-        v = h / hn + np.array([0.0, 0.0, 0.35])
-        return v / np.linalg.norm(v)
+            pos = (np.asarray(k, dtype=float) + 0.5) * self.res
+            if np.all(pos >= lo) and np.all(pos <= hi):
+                pts.append(pos)
+        hdr = Header(); hdr.frame_id = 'map'; hdr.stamp = self.get_clock().now().to_msg()
+        pc = PointCloud2(); pc.header = hdr; pc.height = 1; pc.width = len(pts)
+        pc.fields = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                     PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+                     PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)]
+        pc.is_bigendian = False; pc.point_step = 12; pc.row_step = 12 * len(pts); pc.is_dense = True
+        pc.data = np.asarray(pts, dtype=np.float32).tobytes()
+        self.pub_occ.publish(pc)
 
     def _vp_safe(self, vp):
         c = np.floor(vp / self.res).astype(np.int64)
@@ -731,17 +656,7 @@ class AvpPlanner(Node):
         return True
 
     def _inside_corridor(self, pos):
-        if self.corridor_r_max <= 0.0:
-            return True
-        d = pos[:2] - self.corridor_center
-        r = float(np.linalg.norm(d))
-        th = self.corridor_th_min + ((math.atan2(d[1], d[0]) - self.corridor_th_min) % (2.0 * math.pi))
-        th_max = self.corridor_th_max
-        if th_max <= self.corridor_th_min:
-            th_max += 2.0 * math.pi
-        return (self.corridor_r_min <= r <= self.corridor_r_max
-                and self.corridor_z[0] <= pos[2] <= self.corridor_z[1]
-                and th <= th_max + 1e-9)
+        return bool(np.all(pos >= self.corridor_min) and np.all(pos <= self.corridor_max))
 
     def _visible(self, vp, target):
         d = target - vp

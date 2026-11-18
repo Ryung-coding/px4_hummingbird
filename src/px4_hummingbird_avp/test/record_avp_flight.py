@@ -2,8 +2,10 @@
 """Record camera data and commanded AVP setpoints in simulation or flight."""
 
 import csv
+from collections import deque
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import signal
 import time
@@ -16,8 +18,10 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from px4_msgs.msg import TrajectorySetpoint6dof
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 def stamp_ns(header):
@@ -38,6 +42,7 @@ class FlightRecorder(Node):
         self.color_topic = str(self.declare_parameter('color_topic', '/oak/rgb/image_raw').value)
         self.depth_topic = str(self.declare_parameter('depth_topic', '/oak/stereo/image_raw').value)
         self.camera_info_topic = str(self.declare_parameter('camera_info_topic', '/oak/stereo/camera_info').value)
+        self.color_camera_info_topic = str(self.declare_parameter('color_camera_info_topic', '/oak/rgb/camera_info').value)
         self.video_fps = float(self.declare_parameter('video_fps', 10.0).value)
         self.depth_max_m = float(self.declare_parameter('depth_max_m', 6.0).value)
         if self.mode not in ('sim', 'real'):
@@ -50,6 +55,7 @@ class FlightRecorder(Node):
         self.raw_depth_dir = self.run_dir / 'depth_raw'
         self.raw_depth_dir.mkdir()
         self.events = (self.run_dir / 'events.jsonl').open('w', encoding='utf-8', buffering=1)
+        self.rgb_frames_file = (self.run_dir / 'rgb_frames.jsonl').open('w', encoding='utf-8', buffering=1)
         self.setpoint_file = (self.run_dir / 'setpoints.csv').open('w', newline='', encoding='utf-8')
         self.odom_file = (self.run_dir / 'odometry.csv').open('w', newline='', encoding='utf-8')
         self.setpoint_csv = csv.writer(self.setpoint_file)
@@ -59,19 +65,29 @@ class FlightRecorder(Node):
                                    ['vx', 'vy', 'vz', 'ax', 'ay', 'az', 'jx', 'jy', 'jz', 'wx', 'wy', 'wz'])
         self.odom_csv.writerow(['wall_time_ns', 'stamp_ns', 'frame_id'] + pose_columns + ['vx', 'vy', 'vz'])
         self.writers = {}
-        self.frame_counts = {'rgb': 0, 'depth': 0, 'raw_depth': 0, 'cloud': 0, 'camera_info': 0}
+        self.frame_counts = {'rgb': 0, 'depth': 0, 'raw_depth': 0, 'cloud': 0, 'camera_info': 0,
+                             'rgb_pose': 0, 'rgb_pose_missing': 0}
         self.video_frames = {'rgb': 0, 'depth': 0}
         self.video_start_ns = {}
         self.last_video_frame = {}
+        self.pending_rgb = deque()
+        self.last_rgb_source = None
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.closed = False
         self._event('meta', mode=self.mode, video_fps=self.video_fps, depth_max_m=self.depth_max_m,
                     color_topic=self.color_topic, depth_topic=self.depth_topic,
-                    camera_info_topic=self.camera_info_topic)
+                    camera_info_topic=self.camera_info_topic,
+                    color_camera_info_topic=self.color_camera_info_topic,
+                    rgb_pose_frame='map', rgb_pose_order=['x', 'y', 'z', 'qw', 'qx', 'qy', 'qz'])
 
         self.create_subscription(Image, self.color_topic, self.color_cb, qos_profile_sensor_data)
         self.create_subscription(Image, self.depth_topic, self.depth_cb, qos_profile_sensor_data)
-        self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb,
-                                 qos_profile_sensor_data)
+        self.create_subscription(CameraInfo, self.camera_info_topic,
+                                 lambda msg: self.camera_info_cb(self.camera_info_topic, msg), qos_profile_sensor_data)
+        if self.color_camera_info_topic != self.camera_info_topic:
+            self.create_subscription(CameraInfo, self.color_camera_info_topic,
+                                     lambda msg: self.camera_info_cb(self.color_camera_info_topic, msg), qos_profile_sensor_data)
         self.create_subscription(PointCloud2, '/rgbd_camera/points', self.cloud_cb,
                                  qos_profile_sensor_data)
         self.create_subscription(Odometry, '/lics/odom', self.odom_cb, qos_profile_sensor_data)
@@ -86,6 +102,7 @@ class FlightRecorder(Node):
         self.create_subscription(TrajectorySetpoint6dof, '/fmu/in/trajectory_setpoint6dof',
                                  self.trajectory_cb, 10)
         self.create_timer(1.0, self.flush)
+        self.create_timer(0.05, self.resolve_rgb_tf)
         self.get_logger().info(f'Flight recording: {self.run_dir}')
 
     def _event(self, topic, **data):
@@ -115,6 +132,35 @@ class FlightRecorder(Node):
         self.last_video_frame[name] = frame.copy()
         return self.video_frames[name]
 
+    def resolve_rgb_tf(self, force=False):
+        while self.pending_rgb:
+            video_frame, source, duplicated, deadline_ns = self.pending_rgb[0]
+            row = {'video_frame': video_frame, 'source_video_frame': source['source_video_frame'],
+                   'duplicated': duplicated, 'stamp_ns': source['stamp_ns'],
+                   'wall_time_ns': source['wall_time_ns'], 'frame_id': source['frame_id'],
+                   'width': source['width'], 'height': source['height'], 'pose_frame_id': 'map'}
+            try:
+                if not source['frame_id'] or source['stamp_ns'] <= 0:
+                    raise ValueError('RGB image has no valid frame_id or timestamp')
+                tf = self.tf_buffer.lookup_transform(
+                    'map', source['frame_id'].lstrip('/'), Time(nanoseconds=source['stamp_ns']))
+                p, q = tf.transform.translation, tf.transform.rotation
+                pose = [p.x, p.y, p.z, q.w, q.x, q.y, q.z]
+                if not all(math.isfinite(value) for value in pose):
+                    raise ValueError('RGB camera TF contains non-finite values')
+                row.update(tf_status='ok', tf_stamp_ns=stamp_ns(tf.header), pose_map_camera=pose)
+                self.frame_counts['rgb_pose'] += 1
+            except (TransformException, ValueError) as exc:
+                if not force and time.monotonic_ns() < deadline_ns:
+                    break
+                row.update(tf_status='missing', tf_stamp_ns=None, pose_map_camera=None,
+                           tf_error=str(exc))
+                self.frame_counts['rgb_pose_missing'] += 1
+                if self.frame_counts['rgb_pose_missing'] == 1 or self.frame_counts['rgb_pose_missing'] % 100 == 0:
+                    self.get_logger().warn(f'RGB camera TF unavailable for frame {video_frame}: {exc}')
+            self.rgb_frames_file.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
+            self.pending_rgb.popleft()
+
     def color_cb(self, msg):
         if msg.encoding not in ('bgr8', 'rgb8', 'mono8'):
             self.get_logger().warn(f'Unsupported color encoding: {msg.encoding}', once=True)
@@ -126,8 +172,20 @@ class FlightRecorder(Node):
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         elif msg.encoding == 'mono8':
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        video_frame = self._write_video('rgb', frame, stamp_ns(msg.header))
-        self._event(self.color_topic, stamp_ns=stamp_ns(msg.header),
+        captured_ns, received_ns = stamp_ns(msg.header), time.time_ns()
+        previous_frame = self.video_frames['rgb']
+        video_frame = self._write_video('rgb', frame, captured_ns)
+        if video_frame is not None:
+            source = {'source_video_frame': video_frame, 'stamp_ns': captured_ns,
+                      'wall_time_ns': received_ns, 'frame_id': msg.header.frame_id,
+                      'width': msg.width, 'height': msg.height}
+            for index in range(previous_frame + 1, video_frame + 1):
+                duplicated = index != video_frame
+                frame_source = self.last_rgb_source if duplicated else source
+                self.pending_rgb.append((index, frame_source, duplicated, time.monotonic_ns() + 2_000_000_000))
+            self.last_rgb_source = source
+            self.resolve_rgb_tf()
+        self._event(self.color_topic, wall_time_ns=received_ns, stamp_ns=captured_ns,
                     frame_id=msg.header.frame_id, video_frame=video_frame)
 
     def depth_cb(self, msg):
@@ -158,9 +216,9 @@ class FlightRecorder(Node):
                     encoding=msg.encoding, depth_scale_m=scale, width=msg.width,
                     height=msg.height, step=msg.step, is_bigendian=bool(msg.is_bigendian))
 
-    def camera_info_cb(self, msg):
+    def camera_info_cb(self, topic, msg):
         self.frame_counts['camera_info'] += 1
-        self._event(self.camera_info_topic, stamp_ns=stamp_ns(msg.header),
+        self._event(topic, stamp_ns=stamp_ns(msg.header),
                     frame_id=msg.header.frame_id, width=msg.width, height=msg.height,
                     distortion_model=msg.distortion_model, d=list(msg.d), k=list(msg.k),
                     r=list(msg.r), p=list(msg.p), binning_x=msg.binning_x,
@@ -201,6 +259,7 @@ class FlightRecorder(Node):
 
     def flush(self):
         self.events.flush()
+        self.rgb_frames_file.flush()
         self.setpoint_file.flush()
         self.odom_file.flush()
 
@@ -208,11 +267,13 @@ class FlightRecorder(Node):
         if self.closed:
             return
         self.closed = True
+        self.resolve_rgb_tf(force=True)
         self._event('end', frame_counts=self.frame_counts, video_frames=self.video_frames)
         for writer in self.writers.values():
             writer.release()
         self.flush()
         self.events.close()
+        self.rgb_frames_file.close()
         self.setpoint_file.close()
         self.odom_file.close()
         print(f'Saved flight recording: {self.run_dir} {self.frame_counts}', flush=True)

@@ -37,6 +37,7 @@ ROOTS = (Path.home() / 'Desktop/view_log',
 MAP = 'map'
 BASE = 'base_link'
 OPTICAL = 'oak_rgb_camera_optical_frame'
+SIM_OPTICAL = 'hummingbird_0/base_link/rgbd_camera_optical'
 CONFIG = Path(get_package_share_directory('px4_hummingbird_avp')) / 'config'
 with (CONFIG / 'oak_d_pro.yaml').open(encoding='utf-8') as config_file:
     MOUNT = yaml.safe_load(config_file)['/avp_oak']['ros__parameters']
@@ -128,6 +129,11 @@ class FlightData:
         self.folder, self.headless = folder, headless
         self.odom, self.target, self.viewpoints, self.route = [], [], [], []
         self.rgb, self.depth, self.camera = [], [], None
+        self.mode = 'real'
+        self.camera_frame = OPTICAL
+        color_topic = '/oak/rgb/image_raw'
+        depth_topic = '/oak/stereo/image_raw'
+        camera_info_topic = '/oak/stereo/camera_info'
         self.signals = {name: [] for name in ('rates', 'rates_sp', 'motors', 'servos', 'status', 'opti')}
         with (folder / 'odometry.csv').open(newline='') as stream:
             for row in csv.DictReader(stream):
@@ -149,16 +155,24 @@ class FlightData:
             for line in stream:
                 row = json.loads(line)
                 topic, t = row['topic'], row['wall_time_ns'] / 1e9
-                if topic == '/avp/viewpoints_data':
+                if topic == 'meta':
+                    self.mode = row.get('mode', self.mode)
+                    if self.mode == 'sim':
+                        self.camera_frame = SIM_OPTICAL
+                    color_topic = row.get('color_topic', color_topic)
+                    depth_topic = row.get('depth_topic', depth_topic)
+                    camera_info_topic = row.get('camera_info_topic', camera_info_topic)
+                elif topic == '/avp/viewpoints_data':
                     self.viewpoints.append((t, row['poses']))
                 elif topic == '/avp/route':
                     self.route.append((t, row['poses']))
-                elif topic == '/oak/rgb/image_raw' and row.get('video_frame'):
+                elif topic == color_topic and row.get('video_frame'):
                     self.rgb.append((t, row['video_frame'] - 1))
-                elif topic == '/oak/stereo/image_raw' and row.get('raw_path'):
+                elif topic == depth_topic and row.get('raw_path'):
                     self.depth.append((t, row['raw_path'], row.get('depth_scale_m', 0.001)))
-                elif topic == '/oak/stereo/camera_info' and self.camera is None:
+                elif topic == camera_info_topic and self.camera is None:
                     self.camera = row['k']
+
         if headless:
             topics = {'/fmu/out/vehicle_angular_velocity': 'rates',
                       '/fmu/out/vehicle_rates_setpoint': 'rates_sp',
@@ -210,7 +224,17 @@ class ReplayRos(Node):
         self.last_depth, self.last_path = None, 0.0
         transform = TransformStamped()
         transform.header.stamp = self.get_clock().now().to_msg()
-        transform.header.frame_id, transform.child_frame_id = BASE, OPTICAL
+        transform.header.frame_id, transform.child_frame_id = BASE, data.camera_frame
+        if data.mode == 'sim':
+            transform.transform.translation.x = 0.20
+            transform.transform.translation.z = 0.05
+            q = transform.transform.rotation
+            q.w, q.x, q.y, q.z = (-0.5, 0.5, -0.5, 0.5)
+        else:
+            self._set_oak_camera_transform(transform)
+        self.static_tf.sendTransform(transform)
+
+    def _set_oak_camera_transform(self, transform):
         pos, rpy = MOUNT['position_m'], MOUNT['rpy_rad']
         transform.transform.translation.x = float(pos['x'])
         transform.transform.translation.y = float(pos['y'])
@@ -225,7 +249,6 @@ class ReplayRos(Node):
         optical = quat_wxyz_to_R((-0.5, 0.5, -0.5, 0.5))
         q = transform.transform.rotation
         q.w, q.x, q.y, q.z = R_to_quat_wxyz(Rz @ Ry @ Rx @ optical)
-        self.static_tf.sendTransform(transform)
 
     def publish(self, t, publish_cloud=True):
         stamp = self.get_clock().now().to_msg()
@@ -265,7 +288,7 @@ class ReplayRos(Node):
             valid = np.isfinite(z) & (z > 0.2) & (z < 3.5)
             xyz = np.column_stack(((u[valid] - cx) * z[valid] / fx,
                                    (v[valid] - cy) * z[valid] / fy, z[valid]))
-            header = Header(stamp=stamp, frame_id=OPTICAL)
+            header = Header(stamp=stamp, frame_id=self.data.camera_frame)
             cloud = point_cloud2.create_cloud_xyz32(header, xyz.tolist())
             self.cloud_pub.publish(cloud)
             self.planner_cloud_pub.publish(cloud)

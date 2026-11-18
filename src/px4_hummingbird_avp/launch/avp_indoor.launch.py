@@ -99,6 +99,7 @@ def _flight_recorder_nodes(context):
         color_topic = '/rgbd_camera/image'
         depth_topic = '/rgbd_camera/depth_image'
         camera_info_topic = '/rgbd_camera/camera_info'
+        color_camera_info_topic = camera_info_topic
         video_fps = 10.0
         depth_max_m = 6.0
     else:
@@ -107,6 +108,7 @@ def _flight_recorder_nodes(context):
         color_topic = mount['color_image_topic']
         depth_topic = mount['depth_image_topic']
         camera_info_topic = mount['camera_info_topic']
+        color_camera_info_topic = mount['color_camera_info_topic']
         video_fps = float(mount['video_fps'])
         depth_max_m = float(mount['max_depth_m'])
 
@@ -118,6 +120,7 @@ def _flight_recorder_nodes(context):
                      'color_topic': color_topic,
                      'depth_topic': depth_topic,
                      'camera_info_topic': camera_info_topic,
+                     'color_camera_info_topic': color_camera_info_topic,
                      'video_fps': video_fps,
                      'depth_max_m': depth_max_m}],
     )]
