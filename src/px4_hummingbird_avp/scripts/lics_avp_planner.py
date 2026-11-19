@@ -488,7 +488,7 @@ class AvpPlanner(Node):
             f'worst={pinfo[0]["sqc"]:.1f} vps={len(vps)} cand={len(cand)} '
             f'route={n_reach} visited={len(self.visited)}')
 
-        self._publish_markers(pinfo, vps, route)
+        self._publish_markers(pinfo, vps, route, chosen)
 
     # ================= v2b: 경로계획 유틸 =================
 
@@ -707,7 +707,7 @@ class AvpPlanner(Node):
         self.pub_normals.publish(normals)
         self.pub_coverage.publish(coverage)
 
-    def _publish_markers(self, pinfo, vps, route):
+    def _publish_markers(self, pinfo, vps, route, chosen):
         stamp = self.get_clock().now().to_msg()
 
         ma = MarkerArray()
@@ -748,13 +748,24 @@ class AvpPlanner(Node):
             ar.header.frame_id = 'map'; ar.header.stamp = stamp
             ar.ns = 'vp'; ar.id = i
             ar.type = Marker.ARROW; ar.action = Marker.ADD
-            ar.scale.x, ar.scale.y, ar.scale.z = 0.06, 0.12, 0.2
-            ar.color.r, ar.color.g, ar.color.b, ar.color.a = 1.0, 0.55, 0.0, 1.0
+            ar.scale.x, ar.scale.y, ar.scale.z = 0.025, 0.05, 0.08
+            ar.color.r, ar.color.g, ar.color.b, ar.color.a = 1.0, 0.55, 0.0, 0.25
             p0 = Point(x=float(vp[0]), y=float(vp[1]), z=float(vp[2]))
             tip = vp + look * 1.0
             p1 = Point(x=float(tip[0]), y=float(tip[1]), z=float(tip[2]))
             ar.points = [p0, p1]
             mv.markers.append(ar)
+        if chosen is not None:
+            vp, look = chosen
+            selected = Marker()
+            selected.header.frame_id = 'map'; selected.header.stamp = stamp
+            selected.ns = 'selected'; selected.id = 0
+            selected.type = Marker.ARROW; selected.action = Marker.ADD
+            selected.scale.x, selected.scale.y, selected.scale.z = 0.10, 0.18, 0.28
+            selected.color.r, selected.color.g, selected.color.b, selected.color.a = 0.1, 1.0, 0.2, 1.0
+            selected.points = [Point(x=float(vp[0]), y=float(vp[1]), z=float(vp[2])),
+                               Point(x=float(vp[0] + look[0]), y=float(vp[1] + look[1]), z=float(vp[2] + look[2]))]
+            mv.markers.append(selected)
         self.pub_vp.publish(mv)
 
         mr = MarkerArray()

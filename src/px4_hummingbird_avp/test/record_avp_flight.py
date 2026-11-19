@@ -79,6 +79,7 @@ class FlightRecorder(Node):
                     color_topic=self.color_topic, depth_topic=self.depth_topic,
                     camera_info_topic=self.camera_info_topic,
                     color_camera_info_topic=self.color_camera_info_topic,
+                    rgb_video_rotation_deg=180,
                     rgb_pose_frame='map', rgb_pose_order=['x', 'y', 'z', 'qw', 'qx', 'qy', 'qz'])
 
         self.create_subscription(Image, self.color_topic, self.color_cb, qos_profile_sensor_data)
@@ -172,6 +173,7 @@ class FlightRecorder(Node):
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         elif msg.encoding == 'mono8':
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
         captured_ns, received_ns = stamp_ns(msg.header), time.time_ns()
         previous_frame = self.video_frames['rgb']
         video_frame = self._write_video('rgb', frame, captured_ns)

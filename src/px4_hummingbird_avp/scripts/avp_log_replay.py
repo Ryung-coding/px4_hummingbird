@@ -18,6 +18,7 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 import rclpy
+from rclpy.signals import SignalHandlerOptions
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
@@ -122,6 +123,24 @@ def target_to_map(values):
         return None
     q = R_to_quat_wxyz(R_NE @ R @ R_FB)
     return tuple(pos) + tuple(q)
+
+
+def stop_child(process):
+    if process is None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 class FlightData:
@@ -309,11 +328,19 @@ class ReplayRos(Node):
             marker = Marker()
             marker.header.stamp, marker.header.frame_id = stamp, MAP
             marker.ns, marker.id = kind, idx
-            marker.type = Marker.ARROW if kind == 'viewpoint' else Marker.SPHERE
+            selected = kind == 'route' and idx == len(row[1]) - 1
+            marker.type = Marker.ARROW if kind == 'viewpoint' or selected else Marker.SPHERE
             marker.action = Marker.ADD
             marker.pose = pose_message(values, stamp).pose
-            marker.scale.x, marker.scale.y, marker.scale.z = (0.28, 0.05, 0.05) if kind == 'viewpoint' else (0.12, 0.12, 0.12)
-            marker.color.r, marker.color.g, marker.color.b, marker.color.a = (0.15, 0.85, 0.35, 0.95) if kind == 'viewpoint' else (1.0, 0.65, 0.10, 0.95)
+            if kind == 'viewpoint':
+                marker.scale.x, marker.scale.y, marker.scale.z = 0.18, 0.025, 0.025
+                marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.8, 0.8, 0.8, 0.25
+            elif selected:
+                marker.scale.x, marker.scale.y, marker.scale.z = 0.55, 0.10, 0.10
+                marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.1, 1.0, 0.2, 1.0
+            else:
+                marker.scale.x, marker.scale.y, marker.scale.z = 0.12, 0.12, 0.12
+                marker.color.r, marker.color.g, marker.color.b, marker.color.a = 1.0, 0.65, 0.10, 0.95
             result.markers.append(marker)
         return result
 
@@ -424,15 +451,9 @@ class ReplayWindow(QtWidgets.QMainWindow):
         self.node.last_depth = None
         if not self.planner_cmd:
             return
-        if self.planner and self.planner.poll() is None:
-            self.planner.terminate()
-            try:
-                self.planner.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.planner.kill()
-                self.planner.wait()
+        stop_child(self.planner)
         self.node.clear_planner_markers()
-        self.planner = subprocess.Popen(self.planner_cmd)
+        self.planner = subprocess.Popen(self.planner_cmd, start_new_session=True)
         self.last_tick = time.monotonic()
 
     def toggle(self):
@@ -487,13 +508,7 @@ class ReplayWindow(QtWidgets.QMainWindow):
         self.timer.stop()
         self.rgb_video.release()
         for process in (self.planner, self.rviz):
-            if process and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+            stop_child(process)
         super().closeEvent(event)
 
 
@@ -519,7 +534,7 @@ def main():
     app = QtWidgets.QApplication(sys.argv[:1])
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     signal.signal(signal.SIGTERM, lambda *_: app.quit())
-    rclpy.init(args=None)
+    rclpy.init(args=None, signal_handler_options=SignalHandlerOptions.NO)
     node = ReplayRos(data)
     rviz, window = None, None
     planner_cmd = None if args.no_planner else [
@@ -527,16 +542,15 @@ def main():
         '--params-file', str(CONFIG / 'avp_indoor.yaml'), '-p', 'require_path_ready:=false']
     try:
         if not args.no_rviz:
-            rviz = subprocess.Popen(['rviz2', '-d', str(CONFIG / 'avp_replay.rviz')])
+            rviz = subprocess.Popen(['rviz2', '-d', str(CONFIG / 'avp_replay.rviz')], start_new_session=True)
         window = ReplayWindow(data, node, rviz, planner_cmd)
         window.show()
         return app.exec_()
     finally:
         if window:
             window.close()
-        elif rviz and rviz.poll() is None:
-            rviz.terminate()
-            rviz.wait(timeout=5)
+        else:
+            stop_child(rviz)
         node.destroy_node()
         rclpy.shutdown()
 

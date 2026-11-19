@@ -246,7 +246,8 @@ Visualization Manager:
     Fixed Frame: map
     Frame Rate: 30
   Name: root
-  Tools: ~
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
   Transformation:
     Current:
       Class: rviz_default_plugins/TF
