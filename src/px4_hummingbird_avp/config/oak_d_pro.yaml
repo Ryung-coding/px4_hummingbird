@@ -29,10 +29,11 @@
       y: 0.0
       z: 0.0
     rpy_rad:
-      roll: 0.0
+      roll: 3.141592653589793
       pitch: 0.0
       yaw: 0.0
     color_image_topic: /oak/rgb/image_raw
+    color_camera_info_topic: /oak/rgb/camera_info
     depth_image_topic: /oak/stereo/image_raw
     video_fps: 10.0
     camera_info_topic: /oak/stereo/camera_info

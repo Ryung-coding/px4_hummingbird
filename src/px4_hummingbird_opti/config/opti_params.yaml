@@ -1,5 +1,5 @@
 vrpn_client:
-  server: "192.168.6.28"
+  server: "192.168.6.17"
   port: 3883
   frame_id: "Hummingbird"
   update_freq: 1000.0

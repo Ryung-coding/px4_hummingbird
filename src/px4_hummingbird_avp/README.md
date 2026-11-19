@@ -12,7 +12,7 @@ colcon build --symlink-install --packages-select px4_hummingbird_cmd px4_humming
 source install/setup.bash
 ```
 
-OAK 장치 ID·장착 TF·영상 토픽은 `config/oak_d_pro.yaml`, AVP 경계와 게인은 `config/avp_indoor.yaml`에서 설정합니다. 플래너의 `corridor_*`와 실행기의 비행 경계는 함께 맞춥니다. OAK USB 포트는 현재 `3-7`이며, 권한 오류 시 udev 규칙과 연결 포트를 확인합니다.
+OAK 장치 ID·장착 TF·영상 토픽은 `config/oak_d_pro.yaml`, AVP 경계와 게인은 `config/avp_indoor.yaml`에서 설정합니다. 플래너의 `corridor_*`와 실행기의 비행 경계는 함께 맞춥니다. 초기 목표는 NED `(1, 0, -1)` m, yaw `+90°`이며 1 m 고도에서 Y 방향으로 두 번 왕복합니다. OAK USB 포트는 현재 `3-7`이며, 권한 오류 시 udev 규칙과 연결 포트를 확인합니다.
 
 ## 실행 조합
 
@@ -68,7 +68,9 @@ ros2 run px4_hummingbird_avp lics_check.py
 
 나무 ROI 통계가 필요하면 `--ros-args -p roi_cx:=0.0 -p roi_cy:=0.0 -p roi_r:=1.2`를 추가합니다. **바닥이 카메라 시야에 있고 map의 z=0이 바닥일 때만** `-p expect_floor:=true`로 높이 판정을 켭니다. OAK 축 검사는 발행된 TF를 검증하며, 실물 장착 방향은 물체를 앞·위·오른쪽에 놓아 RViz 점군 방향까지 확인해야 합니다.
 
-`path:=avp_offline`은 `px4_hummingbird_cmd/include/params.hpp`의 `avp_offline_log_file`을 실제 JSONL 파일명으로 바꾼 뒤 사용합니다. a603의 초기 위치·자세와 로그 시작 자세가 허용 오차 내에 맞지 않으면 실행하지 않습니다. 코리더 중심·높이도 실제 설치 위치에 맞춰 `config/avp_indoor.yaml`에서 확인해야 합니다.
+`path:=avp_offline`은 `px4_hummingbird_cmd/include/params.hpp`의 `avp_offline_log_file`을 실제 JSONL 파일명으로 바꾼 뒤 사용합니다. 초기 위치·자세와 로그 시작 자세가 허용 오차 내에 맞지 않으면 실행하지 않습니다. 코리더 위치·높이도 실제 설치 위치에 맞춰 `config/avp_indoor.yaml`에서 확인해야 합니다.
+
+`enable_logger:=true`의 `logs/flight_*/`에는 원본 깊이, RGB 영상, 프레임별 카메라 TF(`rgb_frames.jsonl`), CameraInfo·시점·명령 기록이 저장됩니다. 저장된 기록은 비행 명령 없이 `ros2 run px4_hummingbird_avp avp_log_replay.py flight_기록시각`으로 재생하고, 화면 없이 검사할 때는 끝에 `--check`를 붙입니다.
 
 PX4 없이 OAK 점군과 `base_link` TF만 확인할 때는 **카메라·TF만 확인** 런치와 다음 명령을 사용합니다.
 

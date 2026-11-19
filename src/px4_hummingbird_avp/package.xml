@@ -25,6 +25,8 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>python3-pyqt5</exec_depend>
+  <exec_depend>python3-pyqtgraph</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>depthai_ros_driver_v3</exec_depend>

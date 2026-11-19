@@ -28,17 +28,19 @@ def rotation_matrix(q):
 class LicsCheck(Node):
     def __init__(self):
         super().__init__('lics_check')
+        self.declare_parameter('mode', 'real')
         self.declare_parameter('duration_s', 10.0)
         self.declare_parameter('roi_cx', 0.0)
         self.declare_parameter('roi_cy', 0.0)
         self.declare_parameter('roi_r', 0.0)
         self.declare_parameter('expect_floor', False)
         gp = lambda name: self.get_parameter(name).value
+        self.mode = str(gp('mode'))
         self.duration = float(gp('duration_s'))
         self.roi = (float(gp('roi_cx')), float(gp('roi_cy')), float(gp('roi_r')))
         self.expect_floor = bool(gp('expect_floor'))
-        if self.duration <= 0 or self.roi[2] < 0:
-            raise ValueError('duration_s must be positive and roi_r nonnegative')
+        if self.mode not in ('real', 'sim') or self.duration <= 0 or self.roi[2] < 0:
+            raise ValueError('mode must be real/sim, duration_s > 0, and roi_r >= 0')
 
         self.cloud_count = 0
         self.odom_count = 0
@@ -83,15 +85,16 @@ class LicsCheck(Node):
         p = base_cloud.transform.translation
         R = rotation_matrix(base_cloud.transform.rotation)
         log.info(f'[3] TF OK; camera@base_link=({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) m')
-        # OAK optical +Z is forward, +Y is down; base_link is ROS FLU.
-        forward = R[:, 2]
-        down = R[:, 1]
-        offset = np.array([p.x, p.y, p.z])
-        axes_ok = forward[0] > 0.98 and down[2] < -0.98
-        mount_ok = np.linalg.norm(offset - [0.2, 0.0, 0.0]) < 0.03
-        log.info(f'    optical +Z@base={forward.round(3)}, +Y@base={down.round(3)}; '
-                 f'axes={axes_ok}, mount={mount_ok}')
-        ok &= axes_ok and mount_ok
+        if self.mode == 'real':
+            # OAK optical +Z is forward, +Y is down; base_link is ROS FLU.
+            forward = R[:, 2]
+            down = R[:, 1]
+            offset = np.array([p.x, p.y, p.z])
+            axes_ok = forward[0] > 0.98 and down[2] < -0.98
+            mount_ok = np.linalg.norm(offset - [0.2, 0.0, 0.0]) < 0.03
+            log.info(f'    optical +Z@base={forward.round(3)}, +Y@base={down.round(3)}; '
+                     f'axes={axes_ok}, mount={mount_ok}')
+            ok &= axes_ok and mount_ok
 
         samples = list(islice(point_cloud2.read_points(
             self.cloud, field_names=('x', 'y', 'z'), skip_nans=True), 0, 20000, 20))

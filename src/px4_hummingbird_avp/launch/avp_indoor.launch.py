@@ -82,6 +82,7 @@ def _flight_recorder_nodes(_context):
         parameters=[{'color_topic': mount['color_image_topic'],
                      'depth_topic': mount['depth_image_topic'],
                      'camera_info_topic': mount['camera_info_topic'],
+                     'color_camera_info_topic': mount['color_camera_info_topic'],
                      'video_fps': float(mount['video_fps']),
                      'depth_max_m': float(mount['max_depth_m'])}],
     )]
