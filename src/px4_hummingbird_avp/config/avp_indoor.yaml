@@ -18,6 +18,7 @@ avp_planner:
     d_min: 0.6                  # 관측 거리 하한 [m]
     d_max: 1.5                  # 관측 거리 상한 [m]
     max_range: 3.5              # 입력 점군 최대 사용 거리 [m]
+    pixel_stride: 4             # 입력 점군에서 4개 중 1개 사용
     max_pitch_deg: 30.0         # 관측 시점의 Pitch 절댓값 제한 [deg]
     vp_safety_margin: 0.75      # 시점의 장애물 안전 여유 [m]; Executor 0.5 m보다 큼
 
@@ -32,7 +33,7 @@ avp_planner:
     sqc_min: 0.8                # 시점 후보 점수 하한
     min_cluster: 4              # 표면 패치의 최소 복셀 수
     top_k: 12                   # 한 번에 전달할 시점 후보 수
-    plan_period_s: 2.0          # 재계획 주기 [s]
+    plan_period_s: 10.0         # 재계획 주기 [s]
 
     # [D] 시점 생성 허용 영역. 아래 Executor 비행 경계와 일치시킬 것.
     corridor_x_min: -0.75       # X 하한 [m]
@@ -70,7 +71,7 @@ corridor_executor:
     # [C] 장애물 대응과 실제 위치 추종 판정.
     occ_resolution: 0.05        # 장애물 지도 해상도 [m]; Planner resolution과 일치
     clear_m: 0.5                # 목표 주변 장애물 이격 거리 [m]
-    arrival_tol_m: 0.2          # 실제 위치의 도착 판정 오차 [m]
+    arrival_tol_m: 0.1          # 실제 위치의 도착 판정 오차 [m]; 시점에 도착한 뒤 다음 목표로 이동
     tracking_tol_m: 0.5         # 실제 위치가 뒤처지면 목표 진행을 멈추는 오차 [m]
 
     # [D] PX4 명령 연결.

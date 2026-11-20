@@ -50,7 +50,7 @@ class CorridorExecutor(Node):
         dp('vp_merge_m', 0.25); dp('vp_level_tol_m', 0.3)
         dp('replan_min_s', 1.5); dp('clear_m', 0.5)
         dp('occ_resolution', 0.1)
-        dp('arrival_tol_m', 0.2); dp('tracking_tol_m', 0.5)
+        dp('arrival_tol_m', 0.1); dp('tracking_tol_m', 0.5)
         dp('odom_timeout_s', 0.5); dp('require_control', True)
         dp('setpoint_topic', '/avp/setpoint'); dp('odom_topic', '/lics/odom')
 
@@ -120,6 +120,7 @@ class CorridorExecutor(Node):
         self.last_replan_t = -1e9
         self.last_warn_t = -1e9
         self.last_tick_t = None
+        self.paused_at = None
         self.cur_cmd_pos = None
         self.cur_cmd_pitch = 0.0
         self.last_pitch_t = None
@@ -304,19 +305,25 @@ class CorridorExecutor(Node):
         self.last_tick_t = now
         odom_fresh = self.last_odom_t is not None and now - self.last_odom_t <= self.odom_timeout
         if not odom_fresh or not self._control_ready(now):
-            if self.phase != 'wait':
-                self.phase = 'wait'
-                self.leg = -1
-                self.target = None
-                self.cur_cmd_pos = None
-                self.cur_cmd_pitch = 0.0
-                self.t_first_odom = None
-                self.last_pitch_t = None
-                self.visited = []
-                self.rejected = []
-                self.recovering = False
+            if self.phase != 'wait' and self.paused_at is None:
+                self.paused_at = now
+                self.v = 0.0
                 self._warn('AVP paused: odometry, DDS/Offboard, or initial pose not ready')
             return
+        if self.paused_at is not None:
+            if self.phase == 'dwell':
+                self.dwell_t0 += now - self.paused_at
+            self.paused_at = None
+            self.last_pitch_t = now
+            self.v = 0.0
+            if self.phase in ('fly', 'dwell') and np.linalg.norm(self.pos_enu - self.cur_cmd_pos) > self.tracking_tol:
+                self.phase = 'fly'
+                self.start = self.pos_enu.copy()
+                self.cur_cmd_pos = self.pos_enu.copy()
+                self.pitch_start = self.cur_cmd_pitch
+                self.length = float(np.linalg.norm(self.target - self.start))
+                self.s = 0.0
+                self._publish_path()
 
         if self.phase == 'wait':
             if self.t_first_odom is None:
@@ -340,8 +347,12 @@ class CorridorExecutor(Node):
             return
 
         if self.phase == 'dwell':
-            if not self._publish(self.target, self.pitch_end) and self.target_is_vp:
-                self._recover_from_vp()
+            if not self._publish(self.target, self.pitch_end):
+                if self.target_is_vp:
+                    self._recover_from_vp()
+                return
+            if np.linalg.norm(self.pos_enu - self.target) > self.arrival_tol:
+                self.dwell_t0 = now
                 return
             if now - self.dwell_t0 >= self.hold_s:
                 self._advance()

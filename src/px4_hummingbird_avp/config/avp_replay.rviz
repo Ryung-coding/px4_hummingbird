@@ -227,26 +227,36 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /avp/route_viz
     - Class: rviz_default_plugins/PointCloud2
-      Enabled: false
-      Name: Occupied voxel centers
+      Enabled: true
+      Name: Accumulated occupied voxels
       Topic:
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /avp/occ_voxels
+        Value: /avp_replay/occupied_voxels
       Style: Points
       Size (Pixels): 3
       Color Transformer: FlatColor
       Color: 255; 110; 60
       Decay Time: 0
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Flight corridor
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /avp_replay/safety_region
   Enabled: true
   Global Options:
     Background Color: 40; 45; 50
     Fixed Frame: map
     Frame Rate: 30
   Name: root
-  Tools: ~
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
   Transformation:
     Current:
       Class: rviz_default_plugins/TF

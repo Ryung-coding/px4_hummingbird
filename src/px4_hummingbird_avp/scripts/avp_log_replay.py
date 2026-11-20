@@ -18,12 +18,13 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 import rclpy
+from rclpy.signals import SignalHandlerOptions
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry, Path as RosPath
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
@@ -41,6 +42,8 @@ SIM_OPTICAL = 'hummingbird_0/base_link/rgbd_camera_optical'
 CONFIG = Path(get_package_share_directory('px4_hummingbird_avp')) / 'config'
 with (CONFIG / 'oak_d_pro.yaml').open(encoding='utf-8') as config_file:
     MOUNT = yaml.safe_load(config_file)['/avp_oak']['ros__parameters']
+with (CONFIG / 'avp_indoor.yaml').open(encoding='utf-8') as config_file:
+    AVP = yaml.safe_load(config_file)
 
 
 
@@ -122,6 +125,24 @@ def target_to_map(values):
         return None
     q = R_to_quat_wxyz(R_NE @ R @ R_FB)
     return tuple(pos) + tuple(q)
+
+
+def stop_child(process):
+    if process is None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 class FlightData:
@@ -216,12 +237,25 @@ class ReplayRos(Node):
         self.vp_pub = self.create_publisher(MarkerArray, '/avp_replay/viewpoints', 10)
         self.route_pub = self.create_publisher(MarkerArray, '/avp_replay/route', 10)
         self.cloud_pub = self.create_publisher(PointCloud2, '/avp_replay/points', 10)
+        self.occupied_pub = self.create_publisher(PointCloud2, '/avp_replay/occupied_voxels', 1)
+        self.safety_pub = self.create_publisher(MarkerArray, '/avp_replay/safety_region', 1)
         self.planner_cloud_pub = self.create_publisher(PointCloud2, '/rgbd_camera/points', 10)
         self.planner_markers = [self.create_publisher(MarkerArray, topic, 10)
                                 for topic in ('/avp/sqc', '/avp/viewpoints', '/avp/route_viz', '/surface/coverage')]
         self.tf_pub = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
         self.last_depth, self.last_path = None, 0.0
+        self.depth_times = [row[0] for row in data.depth]
+        self.odom_times = [row[0] for row in data.odom]
+        self.voxel_index, self.occupied = 0, set()
+        self.occupied_dirty, self.last_occupied_publish = False, 0.0
+        planner = AVP['avp_planner']['ros__parameters']
+        corridor = AVP['corridor_executor']['ros__parameters']
+        self.resolution = float(planner['resolution'])
+        self.map_lo = np.minimum([planner[f'roi_{a}_min'] for a in 'xyz'],
+                                 [corridor[f'{a}_min'] for a in 'xyz']) - 0.5
+        self.map_hi = np.maximum([planner[f'roi_{a}_max'] for a in 'xyz'],
+                                 [corridor[f'{a}_max'] for a in 'xyz']) + 0.5
         transform = TransformStamped()
         transform.header.stamp = self.get_clock().now().to_msg()
         transform.header.frame_id, transform.child_frame_id = BASE, data.camera_frame
@@ -232,6 +266,9 @@ class ReplayRos(Node):
             q.w, q.x, q.y, q.z = (-0.5, 0.5, -0.5, 0.5)
         else:
             self._set_oak_camera_transform(transform)
+        translation, rotation = transform.transform.translation, transform.transform.rotation
+        self.camera_pos = np.array([translation.x, translation.y, translation.z])
+        self.camera_R = quat_wxyz_to_R((rotation.w, rotation.x, rotation.y, rotation.z))
         self.static_tf.sendTransform(transform)
 
     def _set_oak_camera_transform(self, transform):
@@ -250,8 +287,71 @@ class ReplayRos(Node):
         q = transform.transform.rotation
         q.w, q.x, q.y, q.z = R_to_quat_wxyz(Rz @ Ry @ Rx @ optical)
 
+    def _publish_safety(self, stamp):
+        bounds = AVP['corridor_executor']['ros__parameters']
+        marker = Marker()
+        marker.header = Header(stamp=stamp, frame_id=MAP)
+        marker.ns, marker.id, marker.type, marker.action = 'straight_bounds', 1, Marker.LINE_LIST, Marker.ADD
+        marker.scale.x = 0.02
+        marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.3, 0.7, 1.0, 0.7
+        corners = [(x, y, z) for z in (bounds['z_min'], bounds['z_max'])
+                   for y in (bounds['y_min'], bounds['y_max']) for x in (bounds['x_min'], bounds['x_max'])]
+        for i, a in enumerate(corners):
+            for bit in (1, 2, 4):
+                j = i ^ bit
+                if i < j:
+                    marker.points.extend((Point(x=float(a[0]), y=float(a[1]), z=float(a[2])),
+                                          Point(x=float(corners[j][0]), y=float(corners[j][1]), z=float(corners[j][2]))))
+        self.safety_pub.publish(MarkerArray(markers=[marker]))
+
+    def _publish_occupied(self, t, stamp):
+        if not self.data.camera:
+            return
+        end = bisect_right(self.depth_times, t)
+        rewound = end < self.voxel_index
+        if rewound:
+            self.occupied.clear()
+            self.voxel_index = 0
+            self.occupied_dirty = True
+        if end > self.voxel_index:
+            batch_end = min(end, self.voxel_index + 12)
+            fx, fy, cx, cy = (self.data.camera[i] for i in (0, 4, 2, 5))
+            for depth_t, raw_path, scale in self.data.depth[self.voxel_index:batch_end]:
+                odom_index = bisect_right(self.odom_times, depth_t) - 1
+                if odom_index < 0:
+                    continue
+                image = np.load(self.data.folder / raw_path)
+                z = image[::4, ::4].astype(np.float32) * scale
+                v, u = np.mgrid[0:image.shape[0]:4, 0:image.shape[1]:4]
+                valid = np.isfinite(z) & (z > 0.2) & (z < 3.5)
+                xyz = np.column_stack(((u[valid] - cx) * z[valid] / fx,
+                                       (v[valid] - cy) * z[valid] / fy, z[valid]))
+                pose = self.data.odom[odom_index][1]
+                R = quat_wxyz_to_R(pose[3:7])
+                if R is None:
+                    continue
+                points = xyz @ (R @ self.camera_R).T + np.asarray(pose[:3]) + R @ self.camera_pos
+                points = points[np.all((points >= self.map_lo) & (points <= self.map_hi), axis=1)]
+                keys = np.unique(np.floor(points / self.resolution).astype(np.int32), axis=0)
+                self.occupied.update(map(tuple, keys))
+            self.voxel_index = batch_end
+            self.occupied_dirty = True
+        if not self.occupied_dirty or (not rewound and time.monotonic() - self.last_occupied_publish < 0.25):
+            return
+        points = (np.asarray(list(self.occupied), dtype=np.float32).reshape(-1, 3) + 0.5) * self.resolution
+        cloud = PointCloud2()
+        cloud.header = Header(stamp=stamp, frame_id=MAP)
+        cloud.height, cloud.width = 1, len(points)
+        cloud.fields = [PointField(name=axis, offset=4*i, datatype=PointField.FLOAT32, count=1)
+                        for i, axis in enumerate('xyz')]
+        cloud.is_bigendian, cloud.point_step, cloud.row_step, cloud.is_dense = False, 12, 12 * len(points), True
+        cloud.data = points.tobytes()
+        self.occupied_pub.publish(cloud)
+        self.occupied_dirty, self.last_occupied_publish = False, time.monotonic()
+
     def publish(self, t, publish_cloud=True):
         stamp = self.get_clock().now().to_msg()
+        self._publish_safety(stamp)
         actual = timed(self.data.odom, t)
         if actual:
             pose = pose_message(actual[1], stamp)
@@ -279,6 +379,8 @@ class ReplayRos(Node):
             self.vp_pub.publish(self._markers(timed(self.data.viewpoints, t), stamp, 'viewpoint'))
             self.route_pub.publish(self._markers(timed(self.data.route, t), stamp, 'route'))
         depth = timed(self.data.depth, t)
+        if publish_cloud:
+            self._publish_occupied(t, stamp)
         if publish_cloud and depth and depth[1] != self.last_depth and self.data.camera:
             self.last_depth = depth[1]
             image = np.load(self.data.folder / depth[1])
@@ -309,11 +411,19 @@ class ReplayRos(Node):
             marker = Marker()
             marker.header.stamp, marker.header.frame_id = stamp, MAP
             marker.ns, marker.id = kind, idx
-            marker.type = Marker.ARROW if kind == 'viewpoint' else Marker.SPHERE
+            selected = kind == 'route' and idx == len(row[1]) - 1
+            marker.type = Marker.ARROW if kind == 'viewpoint' or selected else Marker.SPHERE
             marker.action = Marker.ADD
             marker.pose = pose_message(values, stamp).pose
-            marker.scale.x, marker.scale.y, marker.scale.z = (0.28, 0.05, 0.05) if kind == 'viewpoint' else (0.12, 0.12, 0.12)
-            marker.color.r, marker.color.g, marker.color.b, marker.color.a = (0.15, 0.85, 0.35, 0.95) if kind == 'viewpoint' else (1.0, 0.65, 0.10, 0.95)
+            if kind == 'viewpoint':
+                marker.scale.x, marker.scale.y, marker.scale.z = 0.18, 0.025, 0.025
+                marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.8, 0.8, 0.8, 0.25
+            elif selected:
+                marker.scale.x, marker.scale.y, marker.scale.z = 0.55, 0.10, 0.10
+                marker.color.r, marker.color.g, marker.color.b, marker.color.a = 0.1, 1.0, 0.2, 1.0
+            else:
+                marker.scale.x, marker.scale.y, marker.scale.z = 0.12, 0.12, 0.12
+                marker.color.r, marker.color.g, marker.color.b, marker.color.a = 1.0, 0.65, 0.10, 0.95
             result.markers.append(marker)
         return result
 
@@ -395,13 +505,44 @@ class ReplayWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(trajectory, '경로')
 
         control = pg.GraphicsLayoutWidget()
+        self.control_lines = []
+        has_control = False
+        if self.data.target:
+            colors = ('#d1495b', '#3f88c5', '#2a9d8f')
+            for title, offset, unit in (('위치 명령 / 측정', 0, 'm'), ('자세 명령 / 측정', 3, 'deg')):
+                plot = control.addPlot(title=title, labels={'bottom': '기록 시간 [s]', 'left': unit})
+                plot.addLegend()
+                for series, style in ((self.data.target, '목표'), (self.data.odom, '측정')):
+                    if not series:
+                        continue
+                    ts = [row[0] - self.data.start for row in series]
+                    if offset == 0:
+                        values = np.array([row[1][:3] for row in series])
+                    else:
+                        rotations = [quat_wxyz_to_R(row[1][3:7]) for row in series]
+                        rotations = [R if R is not None else np.full((3, 3), np.nan) for R in rotations]
+                        values = np.degrees(np.array([[math.atan2(R[2, 1], R[2, 2]),
+                                                       -math.asin(np.clip(R[2, 0], -1.0, 1.0)),
+                                                       math.atan2(R[1, 0], R[0, 0])] for R in rotations]))
+                    for i, name in enumerate(('x', 'y', 'z') if offset == 0 else ('roll', 'pitch', 'yaw')):
+                        plot.plot(ts, values[:, i], pen=pg.mkPen(colors[i], width=1.5,
+                                  style=QtCore.Qt.SolidLine if style == '목표' else QtCore.Qt.DashLine),
+                                  name=f'{name} {style}')
+                line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#333333', width=1))
+                plot.addItem(line)
+                self.control_lines.append(line)
+                control.nextRow()
+            has_control = True
         for title, source, indices, unit in (('각속도 측정', 'rates', (0, 1, 2), 'rad/s'),
                                              ('각속도 목표', 'rates_sp', (0, 1, 2), 'rad/s'),
                                              ('모터 출력', 'motors', (0, 1, 2, 3), 'norm'),
                                              ('서보 출력', 'servos', (0, 1, 2, 3, 4, 5), 'norm')):
+            series = self.data.signals[source]
+            if not series:
+                continue
             plot = control.addPlot(title=title, labels={'bottom': '기록 시간 [s]', 'left': unit})
             plot.addLegend()
-            series = self.data.signals[source]
+            has_control = True
             for i in indices:
                 field = 'xyz' if source in ('rates', 'rates_sp') else 'control'
                 ts, values = [], []
@@ -414,25 +555,18 @@ class ReplayWindow(QtWidgets.QMainWindow):
                           name=(('roll', 'pitch', 'yaw')[i] if source in ('rates', 'rates_sp') else str(i+1)))
             line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#333333', width=1))
             plot.addItem(line)
-            if not hasattr(self, 'control_lines'):
-                self.control_lines = []
             self.control_lines.append(line)
             control.nextRow()
-        self.tabs.addTab(control, '제어')
+        if has_control:
+            self.tabs.addTab(control, '제어')
 
     def restart_planner(self):
         self.node.last_depth = None
         if not self.planner_cmd:
             return
-        if self.planner and self.planner.poll() is None:
-            self.planner.terminate()
-            try:
-                self.planner.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.planner.kill()
-                self.planner.wait()
+        stop_child(self.planner)
         self.node.clear_planner_markers()
-        self.planner = subprocess.Popen(self.planner_cmd)
+        self.planner = subprocess.Popen(self.planner_cmd, start_new_session=True)
         self.last_tick = time.monotonic()
 
     def toggle(self):
@@ -487,13 +621,7 @@ class ReplayWindow(QtWidgets.QMainWindow):
         self.timer.stop()
         self.rgb_video.release()
         for process in (self.planner, self.rviz):
-            if process and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+            stop_child(process)
         super().closeEvent(event)
 
 
@@ -519,7 +647,7 @@ def main():
     app = QtWidgets.QApplication(sys.argv[:1])
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     signal.signal(signal.SIGTERM, lambda *_: app.quit())
-    rclpy.init(args=None)
+    rclpy.init(args=None, signal_handler_options=SignalHandlerOptions.NO)
     node = ReplayRos(data)
     rviz, window = None, None
     planner_cmd = None if args.no_planner else [
@@ -527,16 +655,15 @@ def main():
         '--params-file', str(CONFIG / 'avp_indoor.yaml'), '-p', 'require_path_ready:=false']
     try:
         if not args.no_rviz:
-            rviz = subprocess.Popen(['rviz2', '-d', str(CONFIG / 'avp_replay.rviz')])
+            rviz = subprocess.Popen(['rviz2', '-d', str(CONFIG / 'avp_replay.rviz')], start_new_session=True)
         window = ReplayWindow(data, node, rviz, planner_cmd)
         window.show()
         return app.exec_()
     finally:
         if window:
             window.close()
-        elif rviz and rviz.poll() is None:
-            rviz.terminate()
-            rviz.wait(timeout=5)
+        else:
+            stop_child(rviz)
         node.destroy_node()
         rclpy.shutdown()
 
