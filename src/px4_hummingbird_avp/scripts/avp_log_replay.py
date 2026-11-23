@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import signal
+import sqlite3
 import time
 
 import cv2
@@ -146,8 +147,9 @@ def stop_child(process):
 class FlightData:
     def __init__(self, folder, headless):
         self.folder, self.headless = folder, headless
-        self.odom, self.target, self.viewpoints, self.route = [], [], [], []
+        self.odom, self.target, self.viewpoints, self.route, self.sweep_center = [], [], [], [], []
         self.rgb, self.depth, self.camera = [], [], None
+        self.frame_dbs = {}
         self.mode = 'real'
         self.camera_frame = OPTICAL
         color_topic = '/oak/rgb/image_raw'
@@ -185,10 +187,16 @@ class FlightData:
                     self.viewpoints.append((t, row['poses']))
                 elif topic == '/avp/route':
                     self.route.append((t, row['poses']))
+                elif topic == '/avp/sweep_center':
+                    self.sweep_center.append((t, row['pose']))
+                elif topic == color_topic and row.get('db_file'):
+                    self.rgb.append((t, row['db_file'], row['db_id']))
                 elif topic == color_topic and row.get('video_frame'):
-                    self.rgb.append((t, row['video_frame'] - 1))
+                    self.rgb.append((t, None, row['video_frame'] - 1))
+                elif topic == depth_topic and row.get('db_file'):
+                    self.depth.append((t, row['db_file'], row['db_id'], row.get('depth_scale_m', 0.001)))
                 elif topic == depth_topic and row.get('raw_path'):
-                    self.depth.append((t, row['raw_path'], row.get('depth_scale_m', 0.001)))
+                    self.depth.append((t, None, row['raw_path'], row.get('depth_scale_m', 0.001)))
                 elif topic == camera_info_topic and self.camera is None:
                     self.camera = row['k']
 
@@ -219,9 +227,20 @@ class FlightData:
         if not starts:
             raise ValueError('No replayable odometry, target, or camera data')
         self.start, self.end = min(starts), max(ends)
-        for series in (self.odom, self.target, self.viewpoints, self.route, self.rgb, self.depth,
+        for series in (self.odom, self.target, self.viewpoints, self.route, self.sweep_center, self.rgb, self.depth,
                        *self.signals.values()):
             series.sort(key=lambda item: item[0])
+
+    def read_frame(self, db_file, db_id, flags):
+        if db_file not in self.frame_dbs:
+            path = self.folder / db_file
+            self.frame_dbs[db_file] = sqlite3.connect(f'{path.as_uri()}?mode=ro', uri=True)
+        row = self.frame_dbs[db_file].execute('SELECT data FROM frames WHERE id=?', (db_id,)).fetchone()
+        return cv2.imdecode(np.frombuffer(row[0], dtype=np.uint8), flags) if row else None
+
+    def close(self):
+        for db in self.frame_dbs.values():
+            db.close()
 
 
 class ReplayRos(Node):
@@ -236,8 +255,9 @@ class ReplayRos(Node):
         self.route_pub = self.create_publisher(MarkerArray, '/avp_replay/route', 10)
         self.cloud_pub = self.create_publisher(PointCloud2, '/avp_replay/points', 10)
         self.planner_cloud_pub = self.create_publisher(PointCloud2, '/rgbd_camera/points', 10)
+        self.center_pub = self.create_publisher(PoseStamped, '/avp/sweep_center', 10)
         self.planner_markers = [self.create_publisher(MarkerArray, topic, 10)
-                                for topic in ('/avp/sqc', '/avp/viewpoints', '/avp/route_viz', '/surface/coverage')]
+                                for topic in ('/avp/sqc', '/avp/patches', '/avp/viewpoints', '/avp/route_viz', '/surface/coverage')]
         self.tf_pub = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
         self.last_depth, self.last_path = None, 0.0
@@ -271,6 +291,9 @@ class ReplayRos(Node):
 
     def publish(self, t, publish_cloud=True):
         stamp = self.get_clock().now().to_msg()
+        center = timed(self.data.sweep_center, t)
+        if center:
+            self.center_pub.publish(pose_message(center[1], stamp))
         actual = timed(self.data.odom, t)
         if actual:
             pose = pose_message(actual[1], stamp)
@@ -298,10 +321,13 @@ class ReplayRos(Node):
             self.vp_pub.publish(self._markers(timed(self.data.viewpoints, t), stamp, 'viewpoint'))
             self.route_pub.publish(self._markers(timed(self.data.route, t), stamp, 'route'))
         depth = timed(self.data.depth, t)
-        if publish_cloud and depth and depth[1] != self.last_depth and self.data.camera:
-            self.last_depth = depth[1]
-            image = np.load(self.data.folder / depth[1])
-            z = image[::4, ::4].astype(np.float32) * depth[2]
+        if publish_cloud and depth and depth[1:3] != self.last_depth and self.data.camera:
+            self.last_depth = depth[1:3]
+            image = (self.data.read_frame(depth[1], depth[2], cv2.IMREAD_UNCHANGED) if depth[1]
+                     else np.load(self.data.folder / depth[2]))
+            if image is None:
+                return
+            z = image[::4, ::4].astype(np.float32) * depth[3]
             v, u = np.mgrid[0:image.shape[0]:4, 0:image.shape[1]:4]
             fx, fy, cx, cy = (self.data.camera[i] for i in (0, 4, 2, 5))
             valid = np.isfinite(z) & (z > 0.2) & (z < 3.5)
@@ -352,7 +378,8 @@ class ReplayWindow(QtWidgets.QMainWindow):
         self.planner_cmd, self.planner = planner_cmd, None
         self.current, self.speed, self.playing = data.start, 1.0, False
         self.last_tick = time.monotonic()
-        self.rgb_video = cv2.VideoCapture(str(data.folder / 'rgb.mp4'))
+        self.rgb_video = (cv2.VideoCapture(str(data.folder / 'rgb.mp4'))
+                          if any(row[1] is None for row in data.rgb) else None)
         self.last_frame = -1
         self.setWindowTitle(f'AVP log replay | {data.folder.name}')
         self.resize(1450, 900)
@@ -494,19 +521,25 @@ class ReplayWindow(QtWidgets.QMainWindow):
                                  f'|   armed {state.get("arming_state", "-")}   |   '
                                  f'AVP 시점 {len((timed(self.data.viewpoints, t) or (None, []))[1])}개')
         rgb = timed(self.data.rgb, t)
-        if rgb and rgb[1] != self.last_frame:
-            self.rgb_video.set(cv2.CAP_PROP_POS_FRAMES, rgb[1])
-            ok, frame = self.rgb_video.read()
+        if rgb and rgb[1:] != self.last_frame:
+            if rgb[1]:
+                frame = self.data.read_frame(rgb[1], rgb[2], cv2.IMREAD_REDUCED_COLOR_2)
+                ok = frame is not None
+            else:
+                self.rgb_video.set(cv2.CAP_PROP_POS_FRAMES, rgb[2])
+                ok, frame = self.rgb_video.read()
             if ok:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 qimage = QtGui.QImage(frame.data, frame.shape[1], frame.shape[0], frame.strides[0], QtGui.QImage.Format_RGB888)
                 self.camera_label.setPixmap(QtGui.QPixmap.fromImage(qimage.copy()).scaled(
                     self.camera_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-            self.last_frame = rgb[1]
+            self.last_frame = rgb[1:]
 
     def closeEvent(self, event):
         self.timer.stop()
-        self.rgb_video.release()
+        if self.rgb_video:
+            self.rgb_video.release()
+        self.data.close()
         for process in (self.planner, self.rviz):
             stop_child(process)
         super().closeEvent(event)
@@ -539,7 +572,8 @@ def main():
     rviz, window = None, None
     planner_cmd = None if args.no_planner else [
         'ros2', 'run', 'px4_hummingbird_avp', 'lics_avp_planner.py', '--ros-args',
-        '--params-file', str(CONFIG / 'avp_indoor.yaml'), '-p', 'require_path_ready:=false']
+        '--params-file', str(CONFIG / ('avp_outdoor.yaml' if data.sweep_center else 'avp_indoor.yaml')),
+        '-p', 'require_path_ready:=false']
     try:
         if not args.no_rviz:
             rviz = subprocess.Popen(['rviz2', '-d', str(CONFIG / 'avp_replay.rviz')], start_new_session=True)

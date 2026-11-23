@@ -1,0 +1,31 @@
+avp_planner:
+  ros__parameters:
+    roi_relative_to_sweep_center: true
+    enable_route: false
+    roi_x_min: -1.0
+    roi_x_max: 1.0
+    roi_y_min: -1.0
+    roi_y_max: 1.0
+    roi_z_min: -1.2
+    roi_z_max: 0.8
+    corridor_x_min: -2.0
+    corridor_x_max: 2.0
+    corridor_y_min: -2.0
+    corridor_y_max: 2.0
+    corridor_z_min: -1.5
+    corridor_z_max: 1.5
+    resolution: 0.05
+    plan_res: 0.15
+    inflate_m: 0.5
+    d_opt: 1.0
+    d_min: 0.6
+    d_max: 1.6
+    max_range: 4.0
+    max_pitch_deg: 45.0
+    vp_pitch_target_deg: 20.0
+    vp_safety_margin: 0.6
+    min_cluster: 4
+    sqc_min: 0.8
+    sweep_z_levels: [-1.0, 0.0]
+    vp_height_offset_m: 0.5
+    plan_period_s: 2.0

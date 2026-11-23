@@ -219,6 +219,15 @@ Visualization Manager:
         Value: /surface/coverage
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
+      Name: Recomputed surface patches
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /avp/patches
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
       Name: Recomputed route
       Topic:
         Depth: 5

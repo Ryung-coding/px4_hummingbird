@@ -27,6 +27,7 @@ def _viewer_log_setting(name):
 
 def generate_launch_description():
     path = LaunchConfiguration("path")
+    position_mode = LaunchConfiguration("position_mode")
     auto_offboard = LaunchConfiguration("auto_offboard")
     auto_arm = LaunchConfiguration("auto_arm")
     enable_cmd = LaunchConfiguration("enable_cmd")
@@ -37,6 +38,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("path", default_value="circle_demo"),
+        DeclareLaunchArgument("position_mode", default_value="vision"),
         DeclareLaunchArgument("auto_offboard", default_value="true"),
         DeclareLaunchArgument("auto_arm", default_value="false"),
         DeclareLaunchArgument("enable_cmd", default_value="true"),
@@ -52,6 +54,7 @@ def generate_launch_description():
             condition=IfCondition(enable_cmd),
             parameters=[{
                 "path": path,
+                "position_mode": position_mode,
                 "auto_offboard": ParameterValue(auto_offboard, value_type=bool),
                 "auto_arm": ParameterValue(auto_arm, value_type=bool),
             }],

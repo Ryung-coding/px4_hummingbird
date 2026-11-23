@@ -18,7 +18,7 @@ OAK 장치 ID·장착 TF·영상 토픽은 `config/oak_d_pro.yaml`, AVP 경계�
 
 아래는 `mode:=real` 기준입니다. 시뮬레이션에서는 `mode:=sim`으로 바꿉니다. 실기체 비전 입력은 기존 OptiTrack 노드가 담당하고, 시뮬레이션은 Gazebo pose를 PX4 비전 입력으로 항상 전달합니다. `enable_planner` 기본값만 `true`이며 나머지 `enable_*`, `auto_*`는 `false`입니다.
 
-`enable_planner`는 맵·시점 계산, `enable_executor`는 코리더·목표 생성, `enable_cmd`는 PX4로 목표 전달을 뜻합니다. `enable_rviz`는 화면만 켭니다. `enable_logger:=true`는 RGB 영상과 프레임별 카메라 TF·원본 깊이·odometry·목표를 `logs/flight_날짜/`에 기록하고, `enable_executor:=true`인 조합에서는 궤적 `logs/avp_*.jsonl`도 기록합니다. `auto_offboard`와 `auto_arm`은 `enable_cmd:=true`일 때만 유효합니다.
+`enable_planner`는 맵·시점 계산, `enable_executor`는 코리더·목표 생성, `enable_cmd`는 PX4로 목표 전달을 뜻합니다. `enable_rviz`는 화면만 켭니다. `enable_logger:=true`는 RGB JPEG와 프레임별 카메라 TF·16비트 깊이 PNG·odometry·목표를 `logs/flight_날짜/`에 기록하고, `enable_executor:=true`인 조합에서는 궤적 `logs/avp_*.jsonl`도 기록합니다. `auto_offboard`와 `auto_arm`은 `enable_cmd:=true`일 때만 유효합니다.
 
 **카메라·TF 확인:** 플래너·실행기·명령 노드 없이 영상과 TF만 표시합니다. PX4 odometry가 없으면 RViz `Fixed Frame`을 `base_link`로 바꿉니다.
 
@@ -78,17 +78,17 @@ ros2 run px4_hummingbird_avp test_oak_d_pro.py --duration 10
 
 `enable_logger:=true`로 만든 `src/px4_hummingbird_avp/logs/flight_*/`에는 다음이 들어갑니다.
 
-- `rgb.mp4`: RGB 영상. `rgb_frames.jsonl`: **영상 프레임 번호(1부터 시작)**, 촬영 `stamp_ns`, 카메라 `frame_id`, `map`(ENU) 기준 카메라 위치·자세 `pose_map_camera=[x,y,z,qw,qx,qy,qz]`. 영상 보간으로 복제된 프레임은 `duplicated`와 `source_video_frame`으로 표시합니다. TF를 얻지 못한 프레임은 `tf_status=missing`이고 pose가 `null`입니다.
-- `events.jsonl`: RGB·깊이 프레임 이벤트, RGB/깊이 `CameraInfo`의 내부 파라미터, AVP 시점·경로.
-- `depth_raw/*.npy`: 미터 단위 복원이 가능한 원본 깊이. `depth.mp4`는 거리 색상 미리보기입니다.
+- `frames_0001.sqlite3`부터: 약 1 GB씩 나눈 프레임 DB. RGB는 1280×720, 최대 10 fps의 JPEG 품질 90이며 깊이는 밀리미터 단위 uint16 PNG입니다. SIM의 낮은 원본 해상도는 저장할 때 확대하며, 원본 크기를 경고로 알립니다.
+- `rgb_frames.jsonl`: DB 파일명·프레임 ID, 촬영 `stamp_ns`, 카메라 `frame_id`, `map`(ENU) 기준 카메라 위치·자세 `pose_map_camera=[x,y,z,qw,qx,qy,qz]`. TF를 얻지 못한 프레임은 `tf_status=missing`이고 pose가 `null`입니다.
+- `events.jsonl`: RGB·깊이 프레임의 DB 파일명·ID, RGB/깊이 `CameraInfo`의 내부 파라미터, AVP 시점·경로.
 - `odometry.csv`, `setpoints.csv`: 실제 위치와 명령 목표.
 
 같은 `logs/` 디렉터리의 별도 파일 `avp_*.jsonl`은 실행기를 켰을 때만 생성되며, 기본 스윕 `/avp/base_setpoint`와 AVP 목표 `/avp/setpoint` 궤적을 담습니다.
 
-예를 들어 저장된 영상을 열고 해당 프레임의 TF를 확인합니다. 아래 `flight_날짜`는 실제 폴더명으로 바꿉니다.
+저장된 RGB·깊이는 `avp_log_headless`로 미리 보고, 프레임의 TF는 `rgb_frames.jsonl`에서 확인합니다. 아래 `flight_날짜`는 실제 폴더명으로 바꿉니다.
 
 ```bash
-xdg-open ~/Desktop/px4_hummingbird/src/px4_hummingbird_avp/logs/flight_날짜/rgb.mp4
+avp_log_headless flight_날짜
 head -n 1 ~/Desktop/px4_hummingbird/src/px4_hummingbird_avp/logs/flight_날짜/rgb_frames.jsonl
 ```
 

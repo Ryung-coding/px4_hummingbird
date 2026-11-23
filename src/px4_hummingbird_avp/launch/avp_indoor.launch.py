@@ -1,5 +1,7 @@
+import atexit
 import fcntl
 import os
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -19,6 +21,8 @@ CONFIG_DIR = Path(get_package_share_directory('px4_hummingbird_avp')) / 'config'
 
 def _hold_launch_lock():
     global _launch_lock
+    if _launch_lock is not None:
+        return
     domain_id = os.environ.get('ROS_DOMAIN_ID', '0')
     lock_path = Path('/tmp') / f'px4_hummingbird_avp_{os.getuid()}_{domain_id}.lock'
     _launch_lock = os.open(lock_path, os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC, 0o600)
@@ -50,7 +54,14 @@ def _camera_nodes(context):
 
     oak_config_file = str(CONFIG_DIR / 'oak_d_pro.yaml')
     with open(oak_config_file, encoding='utf-8') as config_file:
-        mount = yaml.safe_load(config_file)['/avp_oak']['ros__parameters']
+        camera_config = yaml.safe_load(config_file)
+    mount = camera_config['/avp_oak']['ros__parameters']
+    if LaunchConfiguration('enable_logger').perform(context).lower() == 'true':
+        camera_config['/oak']['ros__parameters']['rgb'].update(i_width=1280, i_height=720, i_low_bandwidth=False)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', prefix='avp_oak_record_', delete=False) as config_file:
+            yaml.safe_dump(camera_config, config_file, sort_keys=False)
+            oak_config_file = config_file.name
+        atexit.register(Path(oak_config_file).unlink, missing_ok=True)
     if mount['parent_frame'] != 'base_link':
         raise ValueError('OAK parent_frame must be base_link for the current AVP TF tree.')
     pos = mount['position_m']
@@ -100,8 +111,7 @@ def _flight_recorder_nodes(context):
         depth_topic = '/rgbd_camera/depth_image'
         camera_info_topic = '/rgbd_camera/camera_info'
         color_camera_info_topic = camera_info_topic
-        video_fps = 10.0
-        depth_max_m = 6.0
+        record_fps = 10.0
     else:
         with (CONFIG_DIR / 'oak_d_pro.yaml').open(encoding='utf-8') as config_file:
             mount = yaml.safe_load(config_file)['/avp_oak']['ros__parameters']
@@ -109,8 +119,7 @@ def _flight_recorder_nodes(context):
         depth_topic = mount['depth_image_topic']
         camera_info_topic = mount['camera_info_topic']
         color_camera_info_topic = mount['color_camera_info_topic']
-        video_fps = float(mount['video_fps'])
-        depth_max_m = float(mount['max_depth_m'])
+        record_fps = float(mount['record_fps'])
 
     return [Node(
         package='px4_hummingbird_avp', executable='record_avp_flight.py', output='screen',
@@ -121,13 +130,11 @@ def _flight_recorder_nodes(context):
                      'depth_topic': depth_topic,
                      'camera_info_topic': camera_info_topic,
                      'color_camera_info_topic': color_camera_info_topic,
-                     'video_fps': video_fps,
-                     'depth_max_m': depth_max_m}],
+                     'record_fps': record_fps}],
     )]
 
 
 def generate_launch_description():
-    _hold_launch_lock()
     enable_planner = LaunchConfiguration('enable_planner')
     enable_logger = LaunchConfiguration('enable_logger')
     enable_executor = LaunchConfiguration('enable_executor')
@@ -136,13 +143,16 @@ def generate_launch_description():
     auto_offboard = LaunchConfiguration('auto_offboard')
     auto_arm = LaunchConfiguration('auto_arm')
     require_path_ready = LaunchConfiguration('require_path_ready')
+    planner_config = LaunchConfiguration('planner_config')
     sim_time = ParameterValue(PythonExpression([
         "'", LaunchConfiguration('mode'), "' == 'sim'"]), value_type=bool)
 
     return LaunchDescription([
+        OpaqueFunction(function=lambda _: _hold_launch_lock()),
         DeclareLaunchArgument('mode', default_value='sim'),
         DeclareLaunchArgument('enable_planner', default_value='true'),
         DeclareLaunchArgument('require_path_ready', default_value='true'),
+        DeclareLaunchArgument('planner_config', default_value=str(CONFIG_DIR / 'avp_indoor.yaml')),
         DeclareLaunchArgument('enable_logger', default_value='false'),
         DeclareLaunchArgument('enable_executor', default_value='false'),
         DeclareLaunchArgument('enable_cmd', default_value='false'),
@@ -161,7 +171,7 @@ def generate_launch_description():
         Node(
             package='px4_hummingbird_avp', executable='lics_avp_planner.py',
             output='screen', condition=IfCondition(enable_planner),
-            parameters=[str(CONFIG_DIR / 'avp_indoor.yaml'),
+            parameters=[planner_config,
                         {'use_sim_time': sim_time,
                          'require_path_ready': ParameterValue(require_path_ready, value_type=bool)}],
         ),

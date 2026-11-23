@@ -35,7 +35,7 @@
     color_image_topic: /oak/rgb/image_raw
     color_camera_info_topic: /oak/rgb/camera_info
     depth_image_topic: /oak/stereo/image_raw
-    video_fps: 10.0
+    record_fps: 10.0
     camera_info_topic: /oak/stereo/camera_info
     sample_step: 2
     max_depth_m: 6.0

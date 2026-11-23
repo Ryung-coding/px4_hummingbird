@@ -402,6 +402,34 @@ inline TargetCMD demo_straight(double t)
   return cmd;
 }
 
+inline TargetCMD avp_fake(double t)
+{
+  static constexpr double CLIMB_SEC = 3.0, ARC_SEC = 8.0;
+  static constexpr double RADIUS = 1.5, CENTER_CLIMB = 1.0;
+  static constexpr double THETA_MAX = 40.0 * M_PI / 180.0;
+
+  TargetCMD cmd;
+  if (t < CLIMB_SEC)
+  {
+    const double u = t / CLIMB_SEC;
+    cmd.z = -CENTER_CLIMB * u * u * (3.0 - 2.0 * u);
+    return cmd;
+  }
+
+  const double phase = std::fmod(t - CLIMB_SEC, 4.0 * ARC_SEC) / ARC_SEC;
+  const int segment = static_cast<int>(phase);
+  const double u = phase - segment;
+  const double s = u * u * (3.0 - 2.0 * u);
+  const double theta = segment == 0 ? THETA_MAX * s :
+                       segment == 1 ? THETA_MAX * (1.0 - s) :
+                       segment == 2 ? -THETA_MAX * s : -THETA_MAX * (1.0 - s);
+
+  cmd.x = RADIUS * (1.0 - std::cos(theta));
+  cmd.z = -CENTER_CLIMB - RADIUS * std::sin(theta);
+  cmd.pitch = -theta;
+  return cmd;
+}
+
 inline TargetCMD avp_demo(double t)
 {
   static constexpr double HOVER_SEC = 3.0, MOVE_SEC = 10.0, HOLD_SEC = 2.0;

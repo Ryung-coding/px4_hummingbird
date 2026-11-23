@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Voxel-based AVP planner for a straight tree row and map/ENU corridor."""
 
+import colorsys
 import heapq
 import math
 from collections import deque
@@ -15,7 +16,7 @@ from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header, Bool
 import struct
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point, Pose, PoseArray
+from geometry_msgs.msg import Point, Pose, PoseArray, PoseStamped
 from std_msgs.msg import ColorRGBA
 import tf2_ros
 
@@ -77,6 +78,8 @@ class AvpPlanner(Node):
         self.declare_parameter('vp_pitch_target_deg', 18.0)
         self.declare_parameter('vp_height_offset_m', 0.0)
         self.declare_parameter('require_path_ready', True)
+        self.declare_parameter('roi_relative_to_sweep_center', False)
+        self.declare_parameter('enable_route', True)
         self.declare_parameter('vp_safety_margin', 0.6)
         # v2b 경로계획
         self.declare_parameter('plan_period_s', 2.5)
@@ -140,6 +143,9 @@ class AvpPlanner(Node):
         self.path_ready = False
         self.last_ready_t = -1e9
         self.require_path_ready = bool(gp('require_path_ready'))
+        self.roi_ready = not bool(gp('roi_relative_to_sweep_center'))
+        self.route_enabled = bool(gp('enable_route'))
+        self.forward = np.array([1.0, 0.0, 0.0])
         self.frames = 0
         self.visited = []                # [(pos ENU, t)]
         self.cur_target = None           # 발행 중 목표 (ENU, snap됨)
@@ -154,10 +160,13 @@ class AvpPlanner(Node):
         self.create_subscription(PointCloud2, '/rgbd_camera/points',
                                  self.cloud_cb, qos)
         self.create_subscription(Bool, '/avp/path_ready', self.ready_cb, 1)
+        if not self.roi_ready:
+            self.create_subscription(PoseStamped, '/avp/sweep_center', self.center_cb, 1)
 
         self.pub_normals = self.create_publisher(MarkerArray, '/surface/normals', 1)
         self.pub_coverage = self.create_publisher(MarkerArray, '/surface/coverage', 1)
         self.pub_sqc = self.create_publisher(MarkerArray, '/avp/sqc', 1)
+        self.pub_patches = self.create_publisher(MarkerArray, '/avp/patches', 1)
         self.pub_vp = self.create_publisher(MarkerArray, '/avp/viewpoints', 1)
         self.pub_route = self.create_publisher(PoseArray, '/avp/route', 1)
         self.pub_vpd = self.create_publisher(PoseArray, '/avp/viewpoints_data', 1)
@@ -171,6 +180,23 @@ class AvpPlanner(Node):
             + f'ROI box={self.roi_min.tolist()}..{self.roi_max.tolist()}')
 
     # ================= 맵 갱신 (기존 동일) =================
+
+    def center_cb(self, msg: PoseStamped):
+        if self.roi_ready or msg.header.frame_id != 'map':
+            return
+        p = msg.pose.position
+        center = np.array([p.x, p.y, p.z])
+        q = msg.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.forward = np.array([math.cos(yaw), math.sin(yaw), 0.0])
+        self.roi_min += center
+        self.roi_max += center
+        self.corridor_min += center
+        self.corridor_max += center
+        self.sweep_z_levels = [z + center[2] for z in self.sweep_z_levels]
+        self.roi_ready = True
+        self.get_logger().info(f'Outdoor ROI centered at {center.round(2)}')
 
     def ready_cb(self, msg: Bool):
         self.path_ready = bool(msg.data)
@@ -265,6 +291,8 @@ class AvpPlanner(Node):
     # ================= 계획 루프 =================
 
     def plan_cb(self):
+        if not self.roi_ready:
+            return
         now = self.get_clock().now().nanoseconds / 1e9
         if not self._ready(now):
             return
@@ -312,6 +340,7 @@ class AvpPlanner(Node):
                     surf[k] = n / nn
         self._publish_surface(surf)
         if not surf:
+            self.pub_patches.publish(MarkerArray(markers=[Marker(action=Marker.DELETEALL)]))
             return
 
         # --- voxel SQC (+frontier 감쇠) ---
@@ -353,6 +382,7 @@ class AvpPlanner(Node):
             if len(cluster) >= self.min_cluster:
                 patches.append(cluster)
         if not patches:
+            self.pub_patches.publish(MarkerArray(markers=[Marker(action=Marker.DELETEALL)]))
             return
 
         pinfo = []
@@ -377,11 +407,13 @@ class AvpPlanner(Node):
             for dmul in (1.0, 0.75, 1.25, 0.5, 1.5):
                 choices = []
                 for dz in (0.0, self.vp_height_offset, -self.vp_height_offset):
-                    cand = np.clip(p['center'] - np.array([self.d_opt * dmul, 0.0, 0.0]),
-                                   self.corridor_min, self.corridor_max)
+                    cand = p['center'] - self.forward * self.d_opt * dmul
+                    if self.route_enabled:
+                        cand = np.clip(cand, self.corridor_min, self.corridor_max)
                     cand[2] = level + dz
-                    if (cand[2] < max(self.vp_min_z, self.corridor_min[2] + 0.1)
-                            or not self._inside_corridor(cand) or not self._vp_safe(cand)):
+                    if (cand[2] < self.vp_min_z or not self._vp_safe(cand)
+                            or (self.route_enabled and
+                                (cand[2] < self.corridor_min[2] + 0.1 or not self._inside_corridor(cand)))):
                         continue
                     for aim_z in heights:
                         if aim_z < self.ground_z:
@@ -389,7 +421,9 @@ class AvpPlanner(Node):
                         aim = p['center'].copy()
                         aim[2] = aim_z
                         look = aim - cand
-                        if (look[0] <= 0.0 or abs(math.atan2(look[1], look[0])) > math.radians(35.0)
+                        ahead = float(np.dot(look[:2], self.forward[:2]))
+                        side = float(self.forward[0] * look[1] - self.forward[1] * look[0])
+                        if (ahead <= 0.0 or abs(math.atan2(side, ahead)) > math.radians(35.0)
                                 or not self._pitch_ok(look) or not self._visible(cand, aim)):
                             continue
                         pitch = abs(math.atan2(float(look[2]), float(np.linalg.norm(look[:2]))))
@@ -427,7 +461,7 @@ class AvpPlanner(Node):
                        for q_, _t in self.visited)]   # 패치 단위 blacklist
 
         # --- 경로계획: coarse known-free A* ---
-        grid = self._build_plan_grid()
+        grid = self._build_plan_grid() if self.route_enabled else None
         route = None
         chosen = None
         if cand and grid is not None:
@@ -488,7 +522,7 @@ class AvpPlanner(Node):
             f'worst={pinfo[0]["sqc"]:.1f} vps={len(vps)} cand={len(cand)} '
             f'route={n_reach} visited={len(self.visited)}')
 
-        self._publish_markers(pinfo, vps, route, chosen)
+        self._publish_markers(surf, pinfo, vps, route, chosen)
 
     # ================= v2b: 경로계획 유틸 =================
 
@@ -707,7 +741,7 @@ class AvpPlanner(Node):
         self.pub_normals.publish(normals)
         self.pub_coverage.publish(coverage)
 
-    def _publish_markers(self, pinfo, vps, route, chosen):
+    def _publish_markers(self, surf, pinfo, vps, route, chosen):
         stamp = self.get_clock().now().to_msg()
 
         ma = MarkerArray()
@@ -739,6 +773,31 @@ class AvpPlanner(Node):
                 cube.colors.append(col)
         ma.markers.append(cube)
         self.pub_sqc.publish(ma)
+
+        patches = MarkerArray(markers=[Marker(action=Marker.DELETEALL)])
+        patch_surface = Marker()
+        patch_surface.header.frame_id = 'map'; patch_surface.header.stamp = stamp
+        patch_surface.ns = 'patches'; patch_surface.id = 1
+        patch_surface.type = Marker.TRIANGLE_LIST; patch_surface.action = Marker.ADD
+        patch_surface.color.a = 0.8
+        patch_surface.scale.x = patch_surface.scale.y = patch_surface.scale.z = 1.0
+        for i, p in enumerate(pinfo):
+            rgb = colorsys.hsv_to_rgb((i * 0.618) % 1.0, 0.8, 1.0)
+            color = ColorRGBA(r=rgb[0], g=rgb[1], b=rgb[2], a=0.8)
+            for k in p['keys'][::max(1, len(p['keys']) // max(1, self.marker_max // len(pinfo)))]:
+                n = surf[k]
+                axis = np.array([0.0, 0.0, 1.0]) if abs(n[2]) < 0.9 else np.array([0.0, 1.0, 0.0])
+                u = np.cross(n, axis); u /= np.linalg.norm(u)
+                v = np.cross(n, u)
+                c = (np.array(k) + 0.5) * self.res + 0.5 * self.res * n
+                corners = [c + self.res * (su * u + sv * v) / 2.0
+                           for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+                for index in (0, 1, 2, 0, 2, 3):
+                    point = corners[index]
+                    patch_surface.points.append(Point(x=float(point[0]), y=float(point[1]), z=float(point[2])))
+                    patch_surface.colors.append(color)
+        patches.markers.append(patch_surface)
+        self.pub_patches.publish(patches)
 
         mv = MarkerArray()
         clr2 = Marker(); clr2.action = Marker.DELETEALL
