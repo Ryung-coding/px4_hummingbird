@@ -6,4 +6,5 @@ models/*
 !worlds/
 worlds/*
 !worlds/KI_demo_KARPE.sdf
+!worlds/KI_demo_outdoor.sdf
 !models/hummingbird/**

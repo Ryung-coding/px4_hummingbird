@@ -227,6 +227,7 @@
         <camera>
           <horizontal_fov>1.518</horizontal_fov>
           <image>
+            <!-- Keep 848x480 for current SITL; increase RGB-D resolution when porting to the 603 branch. -->
             <width>848</width>
             <height>480</height>
             <format>R8G8B8</format>
