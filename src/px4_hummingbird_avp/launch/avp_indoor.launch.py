@@ -140,6 +140,7 @@ def generate_launch_description():
     enable_executor = LaunchConfiguration('enable_executor')
     enable_cmd = LaunchConfiguration('enable_cmd')
     enable_rviz = LaunchConfiguration('enable_rviz')
+    enable_scan = LaunchConfiguration('enable_scan')
     auto_offboard = LaunchConfiguration('auto_offboard')
     auto_arm = LaunchConfiguration('auto_arm')
     require_path_ready = LaunchConfiguration('require_path_ready')
@@ -157,6 +158,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_executor', default_value='false'),
         DeclareLaunchArgument('enable_cmd', default_value='false'),
         DeclareLaunchArgument('enable_rviz', default_value='false'),
+        DeclareLaunchArgument('enable_scan', default_value='false'),
         DeclareLaunchArgument('auto_offboard', default_value='false'),
         DeclareLaunchArgument('auto_arm', default_value='false'),
         Node(
@@ -167,6 +169,11 @@ def generate_launch_description():
         ),
         OpaqueFunction(function=_camera_nodes),
         OpaqueFunction(function=_flight_recorder_nodes),
+        Node(
+            package='px4_hummingbird_avp', executable='avp_scan.py',
+            output='screen', condition=IfCondition(enable_scan),
+            parameters=[{'use_sim_time': sim_time}],
+        ),
 
         Node(
             package='px4_hummingbird_avp', executable='lics_avp_planner.py',
