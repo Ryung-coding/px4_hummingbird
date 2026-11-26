@@ -9,7 +9,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
-from px4_msgs.msg import VehicleStatus
+from px4_msgs.msg import HummingbirdStatus, VehicleStatus
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
@@ -53,6 +53,7 @@ class OutdoorDemo(Node):
         self.standoff = STANDOFF_M
         self.max_altitude = MAX_ALTITUDE_M
         self.position_mode = str(self.declare_parameter('position_mode', 'gps').value)
+        self.reference_only = bool(self.declare_parameter('reference_only', False).value)
         self.total_sweep = TOTAL_SWEEP_S
         self.level_sweep = LEVEL_SWEEP_S
         self.tilt_angle = math.radians(TILT_ANGLE_DEG)
@@ -121,7 +122,11 @@ class OutdoorDemo(Node):
         self.delta_pub = self.create_publisher(Float32, '/avp/radius_delta', 10)
         self.distance_pub = self.create_publisher(Float32, '/avp/front_distance', 10)
         self.create_subscription(Odometry, '/lics/odom', self.odom_cb, qos_profile_sensor_data)
-        self.create_subscription(Bool, '/avp/path_ready', self.ready_cb, 10)
+        if self.reference_only:
+            self.create_subscription(HummingbirdStatus, '/fmu/out/hummingbird_status', self.mode_cb, qos_profile_sensor_data)
+            self.get_logger().warning('Reference-only: waiting for armed DDS mode; no PX4 command is published by this launch.')
+        else:
+            self.create_subscription(Bool, '/avp/path_ready', self.ready_cb, 10)
         self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self.status_cb, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, '/rgbd_camera/points', self.cloud_cb, qos_profile_sensor_data)
         self.create_timer(0.05, self.tick)
@@ -142,7 +147,7 @@ class OutdoorDemo(Node):
                 self.ground_capture_closed = True
                 if len(self.ground_samples) >= 5:
                     self.ground_altitude = float(np.median(self.ground_samples))
-                    self.get_logger().info(f'Ground reference captured from first disarmed second: z={self.ground_altitude:.2f} m (ENU)')
+                    self.get_logger().info(f'Ground reference: z={self.ground_altitude:.3f} m (ENU), samples={len(self.ground_samples)}, window={self.odom_time - self.ground_capture_started_at:.2f}s')
                 elif self.position_mode == 'gps':
                     self.get_logger().error('Insufficient disarmed odometry during ground capture; outdoor GPS path will remain disabled.')
 
@@ -156,6 +161,10 @@ class OutdoorDemo(Node):
 
     def ready_cb(self, msg):
         self.ready = bool(msg.data)
+        self.ready_time = time.monotonic()
+
+    def mode_cb(self, msg):
+        self.ready = msg.hummingbird_airframe and msg.dds_command_enabled
         self.ready_time = time.monotonic()
 
     def cloud_cb(self, msg):
@@ -370,7 +379,8 @@ class OutdoorDemo(Node):
                                                  TREE_CENTER_DISTANCE_M * math.sin(self.heading), 0.0])
             self.last_tick = now
             self.get_logger().info(
-                f'Outdoor start={self.start.round(2)}, mode={self.position_mode}, z_gps_bias={self.z_gps_bias:.2f}m, '
+                f'Outdoor start odom={self.start.round(3)}, yaw={math.degrees(self.heading):.1f}deg, mode={self.position_mode}, '
+                f'z_gps_bias={self.z_gps_bias:.3f}m, height_agl={self.initial_world_altitude - self.z_gps_bias:.3f}m, '
                 f'peak={self.max_altitude:.1f}m, total={self.total_sweep:.1f}s, move={self.move_s:.1f}s')
         self.publish_pose(self.center_pub, self.center, 0.0)
         active = self.path_time < self.total_sweep

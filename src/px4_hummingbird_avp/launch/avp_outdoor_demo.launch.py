@@ -3,6 +3,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -17,6 +18,7 @@ def generate_launch_description():
     enable_logger = LaunchConfiguration('enable_logger')
     return LaunchDescription([
         DeclareLaunchArgument('auto_offboard', default_value='true'),
+        DeclareLaunchArgument('reference_only', default_value='false'),
         DeclareLaunchArgument('position_mode', default_value='gps'),
         DeclareLaunchArgument('enable_logger', default_value='false'),
         DeclareLaunchArgument('tilting_mode', default_value='off'),
@@ -34,12 +36,14 @@ def generate_launch_description():
         Node(
             package='px4_hummingbird_avp', executable='avp_outdoor_demo.py',
             output='screen', parameters=[{'use_sim_time': False,
+                                          'reference_only': ParameterValue(LaunchConfiguration('reference_only'), value_type=bool),
                                           'tilting_mode': ParameterValue(LaunchConfiguration('tilting_mode'), value_type=str),
                                           'position_mode': ParameterValue(LaunchConfiguration('position_mode'), value_type=str)}],
         ),
         Node(
             package='px4_hummingbird_cmd', executable='px4_position_cmd',
             name='px4_position_cmd', output='screen',
+            condition=UnlessCondition(LaunchConfiguration('reference_only')),
             parameters=[{
                 'path': 'ext',
                 'position_mode': ParameterValue(LaunchConfiguration('position_mode'), value_type=str),
