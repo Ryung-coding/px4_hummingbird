@@ -8,6 +8,7 @@ install(PROGRAMS
   scripts/avp_scan.py
   scripts/avp_outdoor_demo.py
   scripts/avp_log_replay.py
+  scripts/avp_valid.py
   scripts/oak_pointcloud.py
   test/test_oak_d_pro.py
   test/lics_check.py

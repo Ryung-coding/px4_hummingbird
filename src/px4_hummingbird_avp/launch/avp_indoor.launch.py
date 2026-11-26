@@ -130,7 +130,8 @@ def _flight_recorder_nodes(context):
                      'depth_topic': depth_topic,
                      'camera_info_topic': camera_info_topic,
                      'color_camera_info_topic': color_camera_info_topic,
-                     'record_fps': record_fps}],
+                     'record_fps': record_fps,
+                     'tilting_mode': ParameterValue(LaunchConfiguration('record_tilting_mode'), value_type=str)}],
     )]
 
 
@@ -155,6 +156,7 @@ def generate_launch_description():
         DeclareLaunchArgument('require_path_ready', default_value='true'),
         DeclareLaunchArgument('planner_config', default_value=str(CONFIG_DIR / 'avp_indoor.yaml')),
         DeclareLaunchArgument('enable_logger', default_value='false'),
+        DeclareLaunchArgument('record_tilting_mode', default_value=''),
         DeclareLaunchArgument('enable_executor', default_value='false'),
         DeclareLaunchArgument('enable_cmd', default_value='false'),
         DeclareLaunchArgument('enable_rviz', default_value='false'),

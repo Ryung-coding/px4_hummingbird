@@ -23,7 +23,8 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_logger', default_value='false'),
         DeclareLaunchArgument('tilting_mode', default_value='off'),
         DeclareLaunchArgument('standoff_m', default_value='1.0'),
-        DeclareLaunchArgument('total_sweep_s', default_value='60.0'),
+        DeclareLaunchArgument('max_altitude_m', default_value='5.0'),
+        DeclareLaunchArgument('total_sweep_s', default_value='80.0'),
         DeclareLaunchArgument('level_sweep_s', default_value='8.0'),
         DeclareLaunchArgument('tilt_angle_deg', default_value='30.0'),
         IncludeLaunchDescription(
@@ -33,6 +34,7 @@ def generate_launch_description():
                 'enable_planner': 'false',
                 'enable_scan': 'true',
                 'enable_logger': enable_logger,
+                'record_tilting_mode': LaunchConfiguration('tilting_mode'),
                 'enable_executor': 'false',
                 'enable_cmd': 'false',
                 'enable_rviz': 'true',
@@ -42,9 +44,8 @@ def generate_launch_description():
             package='px4_hummingbird_avp', executable='avp_outdoor_demo.py',
             output='screen', parameters=[{'use_sim_time': True,
                                           'tilting_mode': ParameterValue(LaunchConfiguration('tilting_mode'), value_type=str),
-                                          'altitudes_m': [1.0, 2.0, 3.0, 4.0, 5.0],
                                           **{name: ParameterValue(LaunchConfiguration(name), value_type=float)
-                                             for name in ('standoff_m', 'total_sweep_s', 'level_sweep_s', 'tilt_angle_deg')}}],
+                                             for name in ('standoff_m', 'max_altitude_m', 'total_sweep_s', 'level_sweep_s', 'tilt_angle_deg')}}],
         ),
         Node(
             package='px4_hummingbird_cmd', executable='px4_position_cmd',

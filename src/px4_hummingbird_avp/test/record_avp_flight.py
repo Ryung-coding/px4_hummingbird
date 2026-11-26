@@ -42,6 +42,9 @@ class FlightRecorder(Node):
         super().__init__('avp_flight_recorder')
         root = Path(str(self.declare_parameter('output_dir', '~/Desktop/px4_hummingbird/src/px4_hummingbird_avp/logs').value)).expanduser()
         self.mode = str(self.declare_parameter('mode', 'real').value)
+        self.tilting_mode = str(self.declare_parameter('tilting_mode', '').value)
+        if self.tilting_mode not in ('', 'on', 'off'):
+            raise ValueError('tilting_mode must be on, off, or empty')
         self.color_topic = str(self.declare_parameter('color_topic', '/oak/rgb/image_raw').value)
         self.depth_topic = str(self.declare_parameter('depth_topic', '/oak/stereo/image_raw').value)
         self.camera_info_topic = str(self.declare_parameter('camera_info_topic', '/oak/stereo/camera_info').value)
@@ -52,7 +55,8 @@ class FlightRecorder(Node):
         if self.record_fps <= 0:
             raise ValueError('record_fps must be positive')
         root.mkdir(parents=True, exist_ok=True)
-        self.run_dir = root / datetime.now(timezone.utc).strftime('flight_%Y%m%d_%H%M%S_%fZ')
+        self.run_dir = root / (datetime.now(timezone.utc).strftime('flight_%Y%m%d_%H%M%S_%fZ') +
+                               (f'_{self.tilting_mode}' if self.tilting_mode else ''))
         self.run_dir.mkdir()
         self.events = (self.run_dir / 'events.jsonl').open('w', encoding='utf-8', buffering=1)
         self.rgb_frames_file = (self.run_dir / 'rgb_frames.jsonl').open('w', encoding='utf-8', buffering=1)
@@ -82,7 +86,7 @@ class FlightRecorder(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.closed = False
-        self._event('meta', mode=self.mode, record_fps=self.record_fps,
+        self._event('meta', mode=self.mode, tilting_mode=self.tilting_mode, record_fps=self.record_fps,
                     color_topic=self.color_topic, depth_topic=self.depth_topic,
                     camera_info_topic=self.camera_info_topic,
                     color_camera_info_topic=self.color_camera_info_topic,

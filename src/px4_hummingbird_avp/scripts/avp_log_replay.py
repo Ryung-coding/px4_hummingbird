@@ -36,7 +36,14 @@ from avp_bridge import R_FB, R_NE, R_to_quat_wxyz, quat_wxyz_to_R
 
 ROOTS = (Path.home() / 'Desktop/view_log',
          Path.home() / 'Desktop/px4_hummingbird/src/px4_hummingbird_avp/logs')
-MAP = 'map'
+# Depth visualization settings (metres / pixels).
+DEPTH_STEP = 2
+DEPTH_MIN_M = 0.2
+DEPTH_MAX_M = 4.0
+DEPTH_VERTICAL_FOV_DEG = 30.0  # full vertical angle; +/- 15 deg around optical axis
+MAP_VOXEL_M = 0.015  # deduplication only; no raycasting or surface filtering
+MAP_PUBLISH_PERIOD_S = 0.5
+MAP = 'map' 
 BASE = 'base_link'
 OPTICAL = 'oak_rgb_camera_optical_frame'
 SIM_OPTICAL = 'hummingbird_0/base_link/rgbd_camera_optical'
@@ -244,8 +251,12 @@ class FlightData:
 
 
 class ReplayRos(Node):
-    def __init__(self, data):
+    def __init__(self, data, enable_planner=False):
         super().__init__('avp_log_replay')
+        self.enable_planner = enable_planner
+        self.map_points = {}
+        self.map_dirty = False
+        self.last_map_publish = 0.0
         self.data = data
         self.odom_pub = self.create_publisher(Odometry, '/avp_replay/odom', 10)
         self.actual_pub = self.create_publisher(RosPath, '/avp_replay/actual_path', 10)
@@ -272,6 +283,9 @@ class ReplayRos(Node):
         else:
             self._set_oak_camera_transform(transform)
         self.static_tf.sendTransform(transform)
+        q, p = transform.transform.rotation, transform.transform.translation
+        self.camera_R = quat_wxyz_to_R((q.w, q.x, q.y, q.z))
+        self.camera_p = np.array([p.x, p.y, p.z])
 
     def _set_oak_camera_transform(self, transform):
         pos, rpy = MOUNT['position_m'], MOUNT['rpy_rad']
@@ -322,21 +336,51 @@ class ReplayRos(Node):
             self.route_pub.publish(self._markers(timed(self.data.route, t), stamp, 'route'))
         depth = timed(self.data.depth, t)
         if publish_cloud and depth and depth[1:3] != self.last_depth and self.data.camera:
-            self.last_depth = depth[1:3]
-            image = (self.data.read_frame(depth[1], depth[2], cv2.IMREAD_UNCHANGED) if depth[1]
-                     else np.load(self.data.folder / depth[2]))
-            if image is None:
-                return
-            z = image[::4, ::4].astype(np.float32) * depth[3]
-            v, u = np.mgrid[0:image.shape[0]:4, 0:image.shape[1]:4]
-            fx, fy, cx, cy = (self.data.camera[i] for i in (0, 4, 2, 5))
-            valid = np.isfinite(z) & (z > 0.2) & (z < 3.5)
-            xyz = np.column_stack(((u[valid] - cx) * z[valid] / fx,
-                                   (v[valid] - cy) * z[valid] / fy, z[valid]))
-            header = Header(stamp=stamp, frame_id=self.data.camera_frame)
-            cloud = point_cloud2.create_cloud_xyz32(header, xyz.tolist())
-            self.cloud_pub.publish(cloud)
-            self.planner_cloud_pub.publish(cloud)
+            depth_pose = timed(self.data.odom, depth[0])
+            if depth_pose is not None:
+                image = (self.data.read_frame(depth[1], depth[2], cv2.IMREAD_UNCHANGED) if depth[1]
+                         else np.load(self.data.folder / depth[2]))
+                if image is not None and image.ndim == 2:
+                    self.last_depth = depth[1:3]
+                    step = DEPTH_STEP
+                    z = image[::step, ::step].astype(np.float32) * depth[3]
+                    v, u = np.mgrid[0:image.shape[0]:step, 0:image.shape[1]:step]
+                    fx, fy, cx, cy = (self.data.camera[i] for i in (0, 4, 2, 5))
+                    valid = np.isfinite(z) & (z > DEPTH_MIN_M) & (z < DEPTH_MAX_M)
+                    xyz = np.column_stack(((u[valid] - cx) * z[valid] / fx,
+                                           (v[valid] - cy) * z[valid] / fy, z[valid]))
+                    values = depth_pose[1]
+                    R = quat_wxyz_to_R(values[3:7])
+                    # Crop only the accumulated visualization in the camera optical frame.
+                    # Keep the horizontal FOV and optional planner input unchanged.
+                    vertical_limit = math.tan(math.radians(DEPTH_VERTICAL_FOV_DEG / 2.0))
+                    map_xyz = xyz[np.abs(xyz[:, 1]) <= xyz[:, 2] * vertical_limit]
+                    if R is not None and len(map_xyz):
+                        world = (map_xyz @ self.camera_R.T + self.camera_p) @ R.T + np.asarray(values[:3])
+                        keys = np.floor(world / MAP_VOXEL_M).astype(np.int64)
+                        _, indices = np.unique(keys, axis=0, return_index=True)
+                        for i in indices:
+                            self.map_points.setdefault(tuple(keys[i]), world[i].astype(np.float32))
+                        self.map_dirty = True
+                    if self.enable_planner:
+                        header = Header(stamp=stamp, frame_id=self.data.camera_frame)
+                        self.planner_cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, xyz.astype(np.float32)))
+        now = time.monotonic()
+        if self.map_dirty and now - self.last_map_publish >= MAP_PUBLISH_PERIOD_S:
+            self.publish_map(stamp)
+
+    def publish_map(self, stamp=None):
+        if stamp is None:
+            stamp = self.get_clock().now().to_msg()
+        points = np.asarray(list(self.map_points.values()), dtype=np.float32).reshape(-1, 3)
+        self.cloud_pub.publish(point_cloud2.create_cloud_xyz32(Header(stamp=stamp, frame_id=MAP), points))
+        self.map_dirty = False
+        self.last_map_publish = time.monotonic()
+
+    def reset_map(self):
+        self.map_points.clear()
+        self.last_depth = None
+        self.publish_map()
 
     def clear_planner_markers(self):
         clear = MarkerArray(markers=[Marker(action=Marker.DELETEALL)])
@@ -475,7 +519,7 @@ class ReplayWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(control, '제어')
 
     def restart_planner(self):
-        self.node.last_depth = None
+        self.node.reset_map()
         if not self.planner_cmd:
             return
         stop_child(self.planner)
@@ -550,7 +594,8 @@ def main():
     parser.add_argument('log', nargs='?', help='flight_* folder or *_headless.jsonl (default: latest flight)')
     parser.add_argument('other', nargs='?', help='optional matching headless JSONL or flight_* folder')
     parser.add_argument('--no-rviz', action='store_true')
-    parser.add_argument('--no-planner', action='store_true', help='show recorded AVP outputs only')
+    parser.add_argument('--no-planner', action='store_true', help='disable planner (default)')
+    parser.add_argument('--planner', action='store_true', help='also run AVP planner')
     parser.add_argument('--check', action='store_true', help='validate inputs without opening windows')
     args = parser.parse_args()
     flight, headless = select_logs(args.log, args.other)
@@ -568,9 +613,9 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     signal.signal(signal.SIGTERM, lambda *_: app.quit())
     rclpy.init(args=None, signal_handler_options=SignalHandlerOptions.NO)
-    node = ReplayRos(data)
+    node = ReplayRos(data, enable_planner=args.planner and not args.no_planner)
     rviz, window = None, None
-    planner_cmd = None if args.no_planner else [
+    planner_cmd = None if not node.enable_planner else [
         'ros2', 'run', 'px4_hummingbird_avp', 'lics_avp_planner.py', '--ros-args',
         '--params-file', str(CONFIG / ('avp_outdoor.yaml' if data.sweep_center else 'avp_indoor.yaml')),
         '-p', 'require_path_ready:=false']
