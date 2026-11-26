@@ -38,6 +38,11 @@ public:
   : rclcpp::Node("px4_position_cmd")
   {
     trajectory_name_ = this->declare_parameter<std::string>("path", "pos");
+    const auto position_mode = this->declare_parameter<std::string>("position_mode", "vision");
+    if (position_mode != "vision" && position_mode != "gps") throw std::runtime_error("position_mode must be vision or gps");
+    gps_position_mode_ = position_mode == "gps";
+    const bool start_at_current = this->declare_parameter<bool>("start_at_current", false);
+    align_to_current_ = gps_position_mode_ || (trajectory_name_ == "ext" && start_at_current);
     auto_offboard_   = this->declare_parameter<bool>("auto_offboard", true);
     auto_arm_        = this->declare_parameter<bool>("auto_arm", false);
     if (trajectory_name_ == "avp_offline") load_offline_path();
@@ -285,8 +290,8 @@ private:
     const double roll_error = utils::angleErrorAbs(start.roll, expected.roll);
     const double pitch_error = utils::angleErrorAbs(start.pitch, expected.pitch);
     const double yaw_error = utils::angleErrorAbs(start.yaw, expected.yaw);
-    if (pos_error > params::avp_initial_pos_tol ||
-        roll_error > params::att_tol || pitch_error > params::att_tol || yaw_error > params::yaw_tol)
+    if (!align_to_current_ && (pos_error > params::avp_initial_pos_tol ||
+        roll_error > params::att_tol || pitch_error > params::att_tol || yaw_error > params::yaw_tol))
     {
       RCLCPP_ERROR(this->get_logger(),
         "AVP log start NED=(%.3f, %.3f, %.3f), RPY=(%.1f, %.1f, %.1f) deg; "
@@ -446,7 +451,40 @@ private:
       RCLCPP_INFO(this->get_logger(), "Auto-arm disabled. Starting setpoint publishing without sending an arm command.");
     }
 
-    start_RC2DDS_handoff();
+    if (align_to_current_) start_current_pose_path(timestamp_us, elapsed_sec);
+    else start_RC2DDS_handoff();
+  }
+
+  void start_current_pose_path(uint64_t timestamp_us, double elapsed_sec)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    const Eigen::Vector4d q(vehicle_attitude_.q[0], vehicle_attitude_.q[1], vehicle_attitude_.q[2], vehicle_attitude_.q[3]);
+    if (!has_vehicle_attitude_ || std::chrono::duration<double>(now - last_vehicle_attitude_time_).count() > params::message_timeout_sec ||
+        !q.allFinite() || q.norm() < 1e-6 || !has_local_position_ || !local_position_.xy_valid || !local_position_.z_valid ||
+        std::chrono::duration<double>(now - last_local_position_time_).count() > params::message_timeout_sec ||
+        !std::isfinite(local_position_.x) || !std::isfinite(local_position_.y) ||
+        !std::isfinite(local_position_.z) || !std::isfinite(local_position_.heading))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for fresh position and attitude before current-pose path.");
+      return;
+    }
+
+    pos_x = local_position_.x;
+    pos_y = local_position_.y;
+    pos_z = local_position_.z;
+    const auto rpy = utils::quatToRpy(q.normalized());
+    last_target_.x = pos_x;
+    last_target_.y = pos_y;
+    last_target_.z = pos_z;
+    last_target_.roll = rpy.x();
+    last_target_.pitch = rpy.y();
+    last_target_.yaw = local_position_.heading;
+    pose_offset_ready_ = false;
+    trajectory_start_time_sec_ = elapsed_sec;
+    control_mode_ = ControlMode::path_active;
+    RCLCPP_INFO(this->get_logger(), "Path starts at current local NED=(%.3f, %.3f, %.3f), yaw=%.3f rad.",
+      pos_x, pos_y, pos_z, last_target_.yaw);
+    path_active(timestamp_us, elapsed_sec);
   }
 
   void path_active(uint64_t timestamp_us, double elapsed_sec)
@@ -454,6 +492,7 @@ private:
     const double trajectory_time_sec = elapsed_sec - trajectory_start_time_sec_;
 
     utils::TargetCMD target = last_target_;
+    bool new_path_target = true;
 
     if (trajectory_name_ == "avp_offline") {
       const double dt = std::max(0.0, elapsed_sec - offline_last_elapsed_sec_);
@@ -475,6 +514,7 @@ private:
         target = ext_target_;
 
       } else {
+        new_path_target = false;
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                              "External setpoint missing or stale; holding last target.");
       }
@@ -498,6 +538,27 @@ private:
       target.z = pos_z + path_target.z;
     }
 
+    if (align_to_current_ && new_path_target)
+    {
+      if (!pose_offset_ready_)
+      {
+        pose_offset_.yaw = last_target_.yaw - target.yaw;
+        const Eigen::Vector2d start_xy = Eigen::Rotation2Dd(pose_offset_.yaw) * Eigen::Vector2d(target.x, target.y);
+        pose_offset_.x = last_target_.x - start_xy.x();
+        pose_offset_.y = last_target_.y - start_xy.y();
+        pose_offset_.z = last_target_.z - target.z;
+        pose_offset_ready_ = true;
+      }
+      const Eigen::Rotation2Dd heading_rotation(pose_offset_.yaw);
+      const Eigen::Vector2d xy = heading_rotation * Eigen::Vector2d(target.x, target.y);
+      const Eigen::Vector2d velocity_xy = heading_rotation * Eigen::Vector2d(target.vx, target.vy);
+      target.x = xy.x() + pose_offset_.x;
+      target.y = xy.y() + pose_offset_.y;
+      target.z += pose_offset_.z;
+      target.vx = velocity_xy.x();
+      target.vy = velocity_xy.y();
+      target.yaw += pose_offset_.yaw;
+    }
     last_target_ = target;
 
 
@@ -769,6 +830,10 @@ private:
 
   bool auto_offboard_{false};
   bool auto_arm_{false};
+  bool gps_position_mode_{false};
+  bool align_to_current_{false};
+  bool pose_offset_ready_{false};
+  utils::TargetCMD pose_offset_{};
 
   bool has_controller_mode_{false};
   bool has_local_position_{false};

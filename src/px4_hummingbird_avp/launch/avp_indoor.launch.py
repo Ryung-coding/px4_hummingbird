@@ -1,5 +1,7 @@
+import atexit
 import fcntl
 import os
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -35,7 +37,7 @@ def _hold_launch_lock(context):
 
     fd = os.open(
         lock_path,
-        os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC,
+        os.O_CREAT | os.O_RDWR | os.O_CLOEXEC,
         0o600
     )
 
@@ -43,10 +45,16 @@ def _hold_launch_lock(context):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     except BlockingIOError as exc:
+        owner = os.read(fd, 64).decode(errors='replace').strip() or 'unknown'
+        try:
+            command = Path(f'/proc/{int(owner)}/cmdline').read_bytes().split(b'\0')
+            launch = next((Path(arg.decode(errors='replace')).name for arg in command if arg.endswith(b'.launch.py')), 'unknown')
+        except (OSError, ValueError):
+            launch = 'unknown'
         os.close(fd)
         raise RuntimeError(
-            'AVP is already running. '
-            'Stop the previous AVP launch before starting another.'
+            f'AVP launch already running: PID {owner}, launch={launch} ({lock_path}). '
+            'The lock is active; a leftover lock file alone cannot cause this error.'
         ) from exc
 
     except OSError:
@@ -54,6 +62,8 @@ def _hold_launch_lock(context):
         raise
 
     _launch_lock = fd
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpid()).encode())
 
     return []
 
@@ -65,6 +75,12 @@ def _camera_nodes(context):
         camera_config = yaml.safe_load(config_file)
 
     mount = camera_config['/avp_oak']['ros__parameters']
+    if LaunchConfiguration('enable_logger').perform(context).lower() == 'true':
+        camera_config['/oak']['ros__parameters']['rgb'].update(i_width=1280, i_height=720)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', prefix='avp_oak_record_', delete=False) as config_file:
+            yaml.safe_dump(camera_config, config_file, sort_keys=False)
+            oak_config_file = config_file.name
+        atexit.register(Path(oak_config_file).unlink, missing_ok=True)
 
     if mount['parent_frame'] != 'base_link':
         raise ValueError(
@@ -198,6 +214,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'auto_arm', default_value='false'
         ),
+        DeclareLaunchArgument(
+            'position_mode', default_value='vision'
+        ),
 
         Node(
             package='px4_hummingbird_avp',
@@ -249,6 +268,7 @@ def generate_launch_description():
             condition=IfCondition(enable_cmd),
             parameters=[{
                 'path': 'ext',
+                'position_mode': ParameterValue(LaunchConfiguration('position_mode'), value_type=str),
                 'auto_offboard': ParameterValue(
                     auto_offboard,
                     value_type=bool

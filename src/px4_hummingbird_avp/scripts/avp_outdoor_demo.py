@@ -9,6 +9,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
+from px4_msgs.msg import VehicleStatus
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
@@ -38,19 +39,27 @@ LOWER_JOIN_SPEED_MPS = 0.12
 LOWER_JOIN_PITCH_RATE_RAD_S = math.radians(5.0)
 MIN_WORLD_ALTITUDE_M = 0.7
 OVERHEAD_RADIUS_M = 1.5
+STANDOFF_M = 1.0
+MAX_ALTITUDE_M = 5.0
+TOTAL_SWEEP_S = 80.0
+LEVEL_SWEEP_S = 8.0
+TILT_ANGLE_DEG = 30.0
 
 
 class OutdoorDemo(Node):
     def __init__(self):
         super().__init__('avp_outdoor_demo')
         self.tilting_mode = str(self.declare_parameter('tilting_mode', 'off').value)
-        self.standoff = float(self.declare_parameter('standoff_m', 1.0).value)
-        self.max_altitude = float(self.declare_parameter('max_altitude_m', 5.0).value)
-        self.total_sweep = float(self.declare_parameter('total_sweep_s', 200.0).value)
-        self.level_sweep = float(self.declare_parameter('level_sweep_s', 8.0).value)
-        self.tilt_angle = math.radians(float(self.declare_parameter('tilt_angle_deg', 30.0).value))
+        self.standoff = STANDOFF_M
+        self.max_altitude = MAX_ALTITUDE_M
+        self.position_mode = str(self.declare_parameter('position_mode', 'gps').value)
+        self.total_sweep = TOTAL_SWEEP_S
+        self.level_sweep = LEVEL_SWEEP_S
+        self.tilt_angle = math.radians(TILT_ANGLE_DEG)
         if self.tilting_mode not in ('on', 'off') or self.standoff <= 0:
             raise ValueError('Invalid tilting_mode or standoff_m')
+        if self.position_mode not in ('gps', 'vision'):
+            raise ValueError('Invalid position_mode')
         if not math.isfinite(self.max_altitude) or self.max_altitude <= 0:
             raise ValueError('max_altitude_m must be positive and finite')
         lower_sweep = 2.0 * (ARC_SEC + MOVE_SEC) if self.tilting_mode == 'on' else 0.0
@@ -70,6 +79,15 @@ class OutdoorDemo(Node):
         self.odom_time = 0.0
         self.world_altitude = None
         self.initial_world_altitude = None
+        self.z_gps_bias = 0.0
+        self.ground_altitude = None
+        self.ground_samples = []
+        self.ground_capture_closed = False
+        self.ground_capture_started_at = None
+        self.vehicle_status = None
+        self.status_time = 0.0
+        self.max_local_altitude = None
+        self.min_local_altitude = None
         self.ready = False
         self.ready_time = 0.0
         self.last_target_msg = None
@@ -104,6 +122,7 @@ class OutdoorDemo(Node):
         self.distance_pub = self.create_publisher(Float32, '/avp/front_distance', 10)
         self.create_subscription(Odometry, '/lics/odom', self.odom_cb, qos_profile_sensor_data)
         self.create_subscription(Bool, '/avp/path_ready', self.ready_cb, 10)
+        self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self.status_cb, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, '/rgbd_camera/points', self.cloud_cb, qos_profile_sensor_data)
         self.create_timer(0.05, self.tick)
 
@@ -113,6 +132,27 @@ class OutdoorDemo(Node):
         self.odom = msg
         self.odom_time = time.monotonic()
         self.world_altitude = msg.pose.pose.position.z
+        if (not self.ground_capture_closed and self.vehicle_status is not None
+                and self.vehicle_status.arming_state == VehicleStatus.ARMING_STATE_DISARMED
+                and self.odom_time - self.status_time <= 1.0):
+            if self.ground_capture_started_at is None:
+                self.ground_capture_started_at = self.odom_time
+            self.ground_samples.append(self.world_altitude)
+            if self.odom_time - self.ground_capture_started_at >= 1.0:
+                self.ground_capture_closed = True
+                if len(self.ground_samples) >= 5:
+                    self.ground_altitude = float(np.median(self.ground_samples))
+                    self.get_logger().info(f'Ground reference captured from first disarmed second: z={self.ground_altitude:.2f} m (ENU)')
+                elif self.position_mode == 'gps':
+                    self.get_logger().error('Insufficient disarmed odometry during ground capture; outdoor GPS path will remain disabled.')
+
+    def status_cb(self, msg):
+        self.vehicle_status = msg
+        self.status_time = time.monotonic()
+        if msg.arming_state == VehicleStatus.ARMING_STATE_ARMED and not self.ground_capture_closed:
+            self.ground_capture_closed = True
+            if self.position_mode == 'gps':
+                self.get_logger().error('Ground reference needs one disarmed second before arming; outdoor GPS path will remain disabled.')
 
     def ready_cb(self, msg):
         self.ready = bool(msg.data)
@@ -217,7 +257,7 @@ class OutdoorDemo(Node):
         return msg
 
     def sweep_target(self, t):
-        climb = self.max_altitude - self.initial_world_altitude
+        climb = self.max_local_altitude - self.initial_world_altitude
         climb_forward = CLIMB_FORWARD_PER_M * climb if self.tilting_mode == 'on' else 0.0
         arc_down = self.arc_radius * math.sin(ARC_ANGLE_RAD)
         join_speed = min(LOWER_JOIN_SPEED_MPS, 1.5 * climb / self.move_s, 1.5 * arc_down / ARC_SEC) if self.tilting_mode == 'on' else 0.0
@@ -230,7 +270,7 @@ class OutdoorDemo(Node):
         if self.tilting_mode == 'on' and t < self.level_sweep:
             u = t / self.level_sweep
             pitch = self.surface_pitch - (self.surface_pitch + self.tilt_angle) * math.sin(math.pi * u) ** 2
-            return self.max_altitude, climb_forward, pitch
+            return self.max_local_altitude, climb_forward, pitch
         if self.tilting_mode == 'on':
             t -= self.level_sweep
         if t < self.move_s:
@@ -241,7 +281,7 @@ class OutdoorDemo(Node):
             if self.tilting_mode == 'on' and r < 1.0:
                 v = 1.0 - r
                 pitch -= LOWER_JOIN_PITCH_RATE_RAD_S * PITCH_RAMP_S * (v ** 3 - v * v)
-            altitude = self.max_altitude - climb * s - join_speed * self.move_s * (u ** 3 - u * u)
+            altitude = self.max_local_altitude - climb * s - join_speed * self.move_s * (u ** 3 - u * u)
             return altitude, climb_forward * (1.0 - s), pitch
         if self.tilting_mode == 'off':
             return self.initial_world_altitude, 0.0, 0.0
@@ -288,7 +328,8 @@ class OutdoorDemo(Node):
         if self.odom is None or now - self.odom_time > 0.5:
             self.last_tick = now
             return
-        if not self.ready or now - self.ready_time > 0.5:
+        armed = self.vehicle_status is not None and self.vehicle_status.arming_state == VehicleStatus.ARMING_STATE_ARMED and now - self.status_time <= 1.0
+        if not armed or not self.ready or now - self.ready_time > 0.5:
             if self.start is not None:
                 self.start = self.center = self.initial_world_altitude = None
                 self.distance = self.overhead_distance = self.last_target_msg = None
@@ -299,7 +340,16 @@ class OutdoorDemo(Node):
             self.last_tick = now
             return
         if self.start is None:
-            if self.world_altitude >= self.max_altitude - 0.05:
+            if self.position_mode == 'gps' and self.ground_altitude is None:
+                self.last_tick = now
+                if now - self.last_log > 2.0:
+                    self.last_log = now
+                    self.get_logger().error('Ground reference unavailable; keep RC control and restart AVP on the ground with DDS Agent connected.')
+                return
+            self.z_gps_bias = self.ground_altitude if self.position_mode == 'gps' else 0.0
+            self.max_local_altitude = self.z_gps_bias + self.max_altitude
+            self.min_local_altitude = self.z_gps_bias + MIN_WORLD_ALTITUDE_M
+            if self.world_altitude >= self.max_local_altitude - 0.05:
                 self.last_tick = now
                 self.publish_hold()
                 if now - self.last_log > 2.0:
@@ -311,7 +361,7 @@ class OutdoorDemo(Node):
             self.start = np.array([p.x, p.y, p.z])
             self.initial_world_altitude = self.world_altitude
             if self.tilting_mode == 'on':
-                self.arc_radius = min(ARC_RADIUS_M, max(0.0, (self.world_altitude - MIN_WORLD_ALTITUDE_M) / math.sin(ARC_ANGLE_RAD)))
+                self.arc_radius = min(ARC_RADIUS_M, max(0.0, (self.world_altitude - self.min_local_altitude) / math.sin(ARC_ANGLE_RAD)))
                 if self.arc_radius < ARC_RADIUS_M:
                     self.get_logger().warning(f'Lower arc radius limited to {self.arc_radius:.2f} m by ground clearance.')
             self.heading = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
@@ -320,7 +370,7 @@ class OutdoorDemo(Node):
                                                  TREE_CENTER_DISTANCE_M * math.sin(self.heading), 0.0])
             self.last_tick = now
             self.get_logger().info(
-                f'Outdoor start={self.start.round(2)}, GPS-local altitude={self.initial_world_altitude:.2f}, '
+                f'Outdoor start={self.start.round(2)}, mode={self.position_mode}, z_gps_bias={self.z_gps_bias:.2f}m, '
                 f'peak={self.max_altitude:.1f}m, total={self.total_sweep:.1f}s, move={self.move_s:.1f}s')
         self.publish_pose(self.center_pub, self.center, 0.0)
         active = self.path_time < self.total_sweep
@@ -377,9 +427,9 @@ class OutdoorDemo(Node):
         base[2] += altitude - self.initial_world_altitude
         target = base + self.delta_radius * normal
         if self.tilting_mode == 'on' and self.path_time >= self.lower_start_s:
-            target[2] = max(target[2] + self.delta_height, self.start[2] + MIN_WORLD_ALTITUDE_M - self.initial_world_altitude)
+            target[2] = max(target[2] + self.delta_height, self.min_local_altitude)
         if self.tilting_mode == 'on':
-            target[2] = min(target[2], self.start[2] + self.max_altitude - self.initial_world_altitude)
+            target[2] = min(target[2], self.max_local_altitude)
         base_msg = self.publish_pose(self.base_pub, base, pitch)
         target_msg = self.publish_pose(self.setpoint_pub, target, pitch)
         self.last_target_msg = target_msg

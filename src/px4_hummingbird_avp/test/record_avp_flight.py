@@ -355,10 +355,13 @@ class FlightRecorder(Node):
 
             if not writer.isOpened():
                 writer.release()
-
-                raise RuntimeError(
-                    f'Cannot open video file: {path}'
-                )
+                if name != 'rgb':
+                    raise RuntimeError(f'Cannot open video file: {path}')
+                path.unlink(missing_ok=True)
+                (self.run_dir / 'rgb_jpeg').mkdir(exist_ok=True)
+                writer = 'jpeg'
+                self._event('rgb_fallback', format='jpg_q95', pattern='rgb_jpeg/%06d.jpg')
+                self.get_logger().error('RGB MP4 encoder unavailable; saving full-resolution JPEG frames.')
 
             self.writers[name] = writer
 
@@ -403,7 +406,12 @@ class FlightRecorder(Node):
         return self.video_frames[name]
 
     def _write_frame(self, name, writer, frame):
-        writer.write(frame)
+        if writer == 'jpeg':
+            path = self.run_dir / 'rgb_jpeg' / f'{self.video_frames[name] + 1:06d}.jpg'
+            if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+                raise RuntimeError(f'Cannot save RGB frame: {path}')
+        else:
+            writer.write(frame)
 
     # RGB frame to camera pose association
 
@@ -851,7 +859,8 @@ class FlightRecorder(Node):
         # Release RGB and depth OpenCV video writers.
 
         for name, writer in self.writers.items():
-            writer.release()
+            if writer != 'jpeg':
+                writer.release()
 
         self.flush()
 
