@@ -26,13 +26,13 @@ MAX_DELTA_M = 3.0
 OUT_SPEED_MPS, IN_SPEED_MPS = 0.35, 0.12
 RADIAL_GAIN = 0.8
 ROI_RADIUS_M = 0.7
-PATCH_LATERAL_M, PATCH_HEIGHT_M = 0.25, 0.30
+PATCH_LATERAL_M, PATCH_HEIGHT_M = 0.5, 1.0
 CLIMB_FORWARD_PER_M = 2.1 / 2.3
 RAMP_PITCH_RAD = math.radians(30.0)
 RETREAT_LEAD_M = 0.15
 PITCH_RAMP_S = 1.5
-ARC_SEC, MOVE_SEC = 4.0, 5.0
-ARC_RADIUS_M, ARC_ANGLE_RAD = 1.5, math.radians(35.0)
+ARC_SEC, MOVE_SEC = 7.0, 5.0
+ARC_RADIUS_M, ARC_ANGLE_RAD = 2.5, math.radians(35.0)
 ARC_JOIN_SPEED_MPS, MOVE_FORWARD_M = 0.15, 1.5
 LOWER_JOIN_SPEED_MPS = 0.12
 LOWER_JOIN_PITCH_RATE_RAD_S = math.radians(5.0)
@@ -129,13 +129,17 @@ class OutdoorDemo(Node):
             tf = self.tf_buffer.lookup_transform('map', msg.header.frame_id, Time())
         except TransformException:
             return
-        xyz = point_cloud2.read_points_numpy(msg, field_names=('x', 'y', 'z'), skip_nans=True)[::6]
-        xyz = xyz[np.isfinite(xyz).all(axis=1)]
-        if len(xyz) == 0:
-            return
         q, p = tf.transform.rotation, tf.transform.translation
         R = quat_wxyz_to_R((q.w, q.x, q.y, q.z))
         if R is None:
+            return
+        self.cloud_time = time.monotonic()
+        self.cloud_stale_warned = False
+        xyz = point_cloud2.read_points_numpy(msg, field_names=('x', 'y', 'z'), skip_nans=True)[::6]
+        xyz = xyz[np.isfinite(xyz).all(axis=1)]
+        if len(xyz) == 0:
+            self.distance = self.overhead_distance = None
+            self.tip_history.clear()
             return
         world = np.asarray(xyz, dtype=float) @ R.T + np.array([p.x, p.y, p.z])
         actual = self.odom.pose.pose.position
@@ -153,6 +157,8 @@ class OutdoorDemo(Node):
             else:
                 tau = 0.25 if raw_above < self.overhead_distance else 1.5
                 self.overhead_distance += (1.0 - math.pow(0.01, dt / tau)) * (raw_above - self.overhead_distance)
+        else:
+            self.overhead_distance = None
         look = np.array([self.center[0] - drone[0], self.center[1] - drone[1], 0.0])
         look_norm = np.linalg.norm(look)
         if look_norm < 0.1:
@@ -165,6 +171,8 @@ class OutdoorDemo(Node):
         mask &= np.abs(rel[:, 2]) < 2.5
         world, rel = world[mask], rel[mask]
         if len(world) < 8:
+            self.distance = None
+            self.tip_history.clear()
             return
         self.front_pub.publish(point_cloud2.create_cloud_xyz32(
             Header(stamp=msg.header.stamp, frame_id='map'), world[::3].astype(np.float32)))
@@ -177,8 +185,12 @@ class OutdoorDemo(Node):
         fronts = [float(np.quantile(forward[mask][inverse == i], 0.2))
                   for i in np.flatnonzero(counts >= 8)]
         if not fronts:
+            self.distance = None
+            self.tip_history.clear()
             return
         if self.tilting_mode == 'on' and self.move_s <= self.path_time < self.move_s + self.level_sweep:
+            self.distance = None
+            self.tip_history.clear()
             return
         trend = float(np.quantile(fronts, 0.2))
         self.tip_history.append(trend)
@@ -186,8 +198,6 @@ class OutdoorDemo(Node):
         now = time.monotonic()
         dt = max(0.0, min(now - self.last_cloud_time, 0.5)) if self.last_cloud_time else 1.0 / 15.0
         self.last_cloud_time = now
-        self.cloud_time = now
-        self.cloud_stale_warned = False
         if self.distance is None:
             self.distance = raw
         else:
@@ -329,24 +339,16 @@ class OutdoorDemo(Node):
         in_lower_sweep = active and self.tilting_mode == 'on' and self.path_time >= self.lower_start_s
         current_altitude, current_forward, current_pitch = self.sweep_target(self.path_time)
         need_overhead = in_lower_sweep and current_pitch < -math.radians(20.0)
-        if self.distance is not None and now - self.cloud_time > 0.5:
-            self.distance = None
+        cloud_stale = now - self.cloud_time > 0.5
+        if cloud_stale:
+            self.distance = self.overhead_distance = None
             self.tip_history.clear()
-            if self.tilting_mode == 'on' and active and not in_top_sweep and not in_lower_sweep and not self.cloud_stale_warned:
-                self.get_logger().warning('RGB-D front clearance stale; holding last target.')
+            if self.tilting_mode == 'on' and active and not in_top_sweep and not self.cloud_stale_warned:
+                self.get_logger().warning('RGB-D point cloud stale; holding last target.')
                 self.cloud_stale_warned = True
-        if self.overhead_distance is not None and now - self.overhead_time > 0.5:
-            self.overhead_distance = None
-        if self.tilting_mode == 'on' and active and not in_top_sweep and not in_lower_sweep and self.distance is None:
+        if self.tilting_mode == 'on' and active and not in_top_sweep and cloud_stale:
             self.last_tick = now
             self.publish_hold()
-            return
-        if need_overhead and self.overhead_distance is None:
-            self.last_tick = now
-            self.publish_hold()
-            if now - self.last_log > 2.0:
-                self.last_log = now
-                self.get_logger().warning('RGB-D overhead clearance stale; holding lower sweep.')
             return
 
         dt = max(0.0, min(now - self.last_tick, 0.1))
@@ -356,7 +358,9 @@ class OutdoorDemo(Node):
         forward = np.array([math.cos(self.heading), math.sin(self.heading), 0.0])
         normal = np.array([-forward[0], -forward[1], CLIMB_FORWARD_PER_M])
         normal /= math.hypot(1.0, CLIMB_FORWARD_PER_M)
-        if self.tilting_mode == 'on' and active and not in_top_sweep and not in_lower_sweep:
+        if self.tilting_mode == 'on' and active and not in_top_sweep and not in_lower_sweep and self.distance is None:
+            self.delta_radius = max(0.0, self.delta_radius - IN_SPEED_MPS * dt)
+        elif self.tilting_mode == 'on' and active and not in_top_sweep and not in_lower_sweep:
             radial_speed = max(-IN_SPEED_MPS, min(OUT_SPEED_MPS, RADIAL_GAIN * front_error))
             if front_error > 0.15:
                 current_base = self.start.copy() + current_forward * forward
@@ -375,6 +379,8 @@ class OutdoorDemo(Node):
                 base_z = self.start[2] + current_altitude - self.initial_world_altitude
                 retreat_z = actual_z - base_z - self.delta_radius * normal[2] - RETREAT_LEAD_M
                 self.delta_height = max(-MAX_DELTA_M, min(self.delta_height, retreat_z))
+        elif need_overhead:
+            self.delta_height += max(-IN_SPEED_MPS * dt, min(IN_SPEED_MPS * dt, -self.delta_height))
         if not active or self.tilting_mode == 'off' or in_top_sweep or (in_lower_sweep and (not need_overhead or overhead_error <= 0.15)) or (not in_lower_sweep and front_error <= 0.15):
             self.path_time = min(self.total_sweep, self.path_time + dt)
         altitude, forward_m, pitch = self.sweep_target(self.path_time)
