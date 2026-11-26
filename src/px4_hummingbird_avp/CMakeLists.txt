@@ -6,6 +6,7 @@ find_package(ament_cmake REQUIRED)
 install(PROGRAMS
   scripts/avp_bridge.py
   scripts/avp_log_replay.py
+  scripts/avp_outdoor_demo.py
   scripts/oak_pointcloud.py
   test/test_oak_d_pro.py
   test/lics_check.py

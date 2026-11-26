@@ -1,5 +1,8 @@
+import atexit
 import fcntl
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -29,10 +32,17 @@ def _hold_launch_lock():
         raise RuntimeError('AVP is already running. Stop the previous AVP launch before starting another.') from exc
 
 
-def _camera_nodes(_context):
+def _camera_nodes(context):
     oak_config_file = str(CONFIG_DIR / 'oak_d_pro.yaml')
     with open(oak_config_file, encoding='utf-8') as config_file:
-        mount = yaml.safe_load(config_file)['/avp_oak']['ros__parameters']
+        camera_config = yaml.safe_load(config_file)
+    mount = camera_config['/avp_oak']['ros__parameters']
+    if LaunchConfiguration('enable_logger').perform(context).lower() == 'true':
+        camera_config['/oak']['ros__parameters']['rgb'].update(i_width=1280, i_height=720, i_low_bandwidth=False)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', prefix='avp_oak_record_', delete=False) as config_file:
+            yaml.safe_dump(camera_config, config_file, sort_keys=False)
+            oak_config_file = config_file.name
+        atexit.register(Path(oak_config_file).unlink, missing_ok=True)
     if mount['parent_frame'] != 'base_link':
         raise ValueError('OAK parent_frame must be base_link for the current AVP TF tree.')
     pos = mount['position_m']
@@ -72,7 +82,9 @@ def _camera_nodes(_context):
     ]
 
 
-def _flight_recorder_nodes(_context):
+def _flight_recorder_nodes(context):
+    if LaunchConfiguration('enable_logger').perform(context).lower() == 'true' and shutil.which('ffmpeg') is None:
+        raise RuntimeError('AVP recording requires ffmpeg for high-quality RGB MP4.')
     with (CONFIG_DIR / 'oak_d_pro.yaml').open(encoding='utf-8') as config_file:
         mount = yaml.safe_load(config_file)['/avp_oak']['ros__parameters']
 
@@ -84,7 +96,8 @@ def _flight_recorder_nodes(_context):
                      'camera_info_topic': mount['camera_info_topic'],
                      'color_camera_info_topic': mount['color_camera_info_topic'],
                      'video_fps': float(mount['video_fps']),
-                     'depth_max_m': float(mount['max_depth_m'])}],
+                     'depth_max_m': float(mount['max_depth_m']),
+                     'tilting_mode': ParameterValue(LaunchConfiguration('record_tilting_mode'), value_type=str)}],
     )]
 
 
@@ -102,6 +115,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_planner', default_value='true'),
         DeclareLaunchArgument('require_path_ready', default_value='true'),
         DeclareLaunchArgument('enable_logger', default_value='false'),
+        DeclareLaunchArgument('record_tilting_mode', default_value=''),
         DeclareLaunchArgument('enable_executor', default_value='false'),
         DeclareLaunchArgument('enable_cmd', default_value='false'),
         DeclareLaunchArgument('enable_rviz', default_value='false'),
